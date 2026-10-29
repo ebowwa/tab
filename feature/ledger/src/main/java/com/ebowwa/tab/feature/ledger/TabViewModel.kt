@@ -5,7 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import com.ebowwa.tab.core.agent.GameTemplate
+import com.ebowwa.tab.core.agent.HtmlValidator
 import com.ebowwa.tab.core.agent.ModelDownload
 import com.ebowwa.tab.core.agent.ModelStatus
 import com.ebowwa.tab.core.agent.StudioAgent
@@ -95,21 +95,32 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
     }
 
     private suspend fun attempt(prompt: String, repairOf: Pair<String, String>?) {
-        agent.design(prompt).fold(
-            onSuccess = { (spec, r) ->
-                val page = GameTemplate.render(spec)
-                runCatching { java.io.File(appContext.filesDir, "last_game.html").writeText(page) }
+        val result = if (repairOf == null) {
+            agent.generate(prompt)
+        } else {
+            agent.repair(prompt, repairOf.first, repairOf.second)
+        }
+        result.fold(
+            onSuccess = { r ->
+                val verdict = HtmlValidator.validate(r.text)
+                val page = verdict.html
                 val tok = if (r.ttftMs > 0L) String.format(Locale.US, "%.0f", r.tokPerSec) else "n/a"
-                val summary = "${r.outputTokens} tok | ${r.totalMs} ms | $tok tok/s"
-                _state.update { st ->
-                    st.copy(
-                        history = (st.history + listOfNotNull(st.html.ifBlank { null })).takeLast(10),
-                        html = page,
-                        metrics = summary,
-                    )
+                val suffix = if (repairOf != null) " | self-repaired" else ""
+                val summary = "${r.outputTokens} tok | ${r.totalMs} ms | $tok tok/s$suffix"
+                if (page == null) {
+                    _state.update { it.copy(error = verdict.reason, metrics = summary) }
+                } else {
+                    runCatching { java.io.File(appContext.filesDir, "last_game.html").writeText(page) }
+                    _state.update { st ->
+                        st.copy(
+                            history = (st.history + listOfNotNull(st.html.ifBlank { null })).takeLast(10),
+                            html = page,
+                            metrics = summary,
+                        )
+                    }
                 }
             },
-            onFailure = { e -> _state.update { it.copy(error = e.message ?: "design failed") } },
+            onFailure = { e -> _state.update { it.copy(error = e.message ?: "generation failed") } },
         )
     }
 
@@ -118,8 +129,23 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
      * error arriving, not by a timer: a fixed delay missed errors that surfaced later.
      */
     fun onRuntimeError(message: String) {
-        // The engine is ours, so this should never fire; keep it visible if it does.
         android.util.Log.w("Tab", "webview error: $message")
+        if (repairing || _state.value.busy || repairAttempts >= 2) return
+        val prompt = lastPrompt
+        if (prompt.isBlank() || _state.value.html.isBlank()) return
+        repairing = true
+        viewModelScope.launch {
+            delay(400)
+            val broken = _state.value.html
+            repairAttempts++
+            _state.update { it.copy(busy = true, error = null) }
+            try {
+                attempt(prompt, broken to message)
+            } finally {
+                _state.update { it.copy(busy = false) }
+                repairing = false
+            }
+        }
     }
 
     private var repairing = false
