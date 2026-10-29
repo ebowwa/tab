@@ -44,7 +44,8 @@ class StudioAgent {
     }
 
     suspend fun generate(userPrompt: String): Result<GenerationResult> {
-        val result = engine.generate(SYSTEM_INSTRUCTION, userPrompt)
+        // 512 was truncating games mid-function; nano-v4 has a 32k window.
+        val result = engine.generate(SYSTEM_INSTRUCTION, userPrompt, maxTokens = 2048)
         result.onSuccess { r ->
             val tok = if (r.ttftMs > 0L) String.format(Locale.US, "%.1f", r.tokPerSec) else "n/a"
             Log.i(
@@ -67,12 +68,19 @@ class StudioAgent {
             Hard rules:
             - Single file. All CSS and JavaScript inline, inside the document.
             - No external resources: no <script src>, no <link href>, no CDN, no fonts, no images.
-            - Use <canvas> or plain DOM elements for everything you draw.
-            - Target under 2500 characters. Shorter is better.
-            - It must actually run: define your variables before use, and drive animation with
-              requestAnimationFrame or setInterval.
-            - Make it playable with touch (pointerdown / touchstart), not only the keyboard.
-            - Start with <!doctype html> and end with </html>.
+            - Use <canvas> for everything you draw. Size it to fill the window.
+            - Keep the whole file under about 1200 characters. Short and working beats
+              ambitious and broken.
+            - Start with <!doctype html> and finish with </html>. Never stop mid-function.
+
+            It must visibly animate and be playable, so:
+            - Spawn a new object on a timer (for example every 40 frames) so the screen is
+              NEVER empty. Do not rely on a single starting object.
+            - Update positions and then redraw, and call requestAnimationFrame at the end of
+              your draw function so the loop continues forever.
+            - Handle touch: use pointerdown/pointermove/pointerup and also call
+              preventDefault so dragging does not scroll the page.
+            - Show a visible score as text drawn on the canvas.
 
             Style: dark background, high contrast, one clear mechanic, immediate feedback.
         """.trimIndent()
@@ -104,6 +112,9 @@ object HtmlValidator {
         val hit = forbidden.firstOrNull { lower.contains(it) }
         if (hit != null) {
             return Verdict(null, "Rejected: generated markup uses \"$hit\", which can reach outside the page.")
+        }
+        if (!cleaned.contains("</html>", ignoreCase = true)) {
+            return Verdict(null, "The document was cut off before it finished. Try again, or ask for something simpler.")
         }
         if (cleaned.length > 40_000) {
             return Verdict(null, "Rejected: document is too large (${cleaned.length} chars).")

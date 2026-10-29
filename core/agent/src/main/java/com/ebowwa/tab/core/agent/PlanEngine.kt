@@ -47,7 +47,11 @@ interface PlanEngine {
     val label: String
     val isOnDevice: Boolean
 
-    suspend fun generate(systemInstruction: String, prompt: String): Result<GenerationResult>
+    suspend fun generate(
+        systemInstruction: String,
+        prompt: String,
+        maxTokens: Int = 512,
+    ): Result<GenerationResult>
 }
 
 /** Gemini Nano through ML Kit GenAI + AICore. Nothing leaves the phone. */
@@ -58,13 +62,14 @@ class NanoEngine(private val model: GenerativeModel) : PlanEngine {
     override suspend fun generate(
         systemInstruction: String,
         prompt: String,
+        maxTokens: Int,
     ): Result<GenerationResult> = runCatching {
         val request = generateContentRequest(
             SystemInstruction(systemInstruction),
             TextPart(prompt),
         ) {
             temperature = 0.0f
-            maxOutputTokens = 512
+            maxOutputTokens = maxTokens
         }
 
         val promptTokens = runCatching { model.countTokens(request).totalTokens }.getOrDefault(-1)
@@ -122,6 +127,7 @@ class GeminiRestEngine(
     override suspend fun generate(
         systemInstruction: String,
         prompt: String,
+        maxTokens: Int,
     ): Result<GenerationResult> = withContext(Dispatchers.IO) {
         runCatching {
             val url = URL("$ENDPOINT/$modelName:generateContent")
@@ -142,7 +148,7 @@ class GeminiRestEngine(
                     "generationConfig",
                     JSONObject()
                         .put("temperature", 0)
-                        .put("maxOutputTokens", 512)
+                        .put("maxOutputTokens", maxTokens)
                         .put("responseMimeType", "application/json"),
                 )
             }

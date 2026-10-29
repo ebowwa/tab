@@ -1,7 +1,10 @@
 package com.ebowwa.tab.feature.ledger
 
 import android.graphics.Color as AndroidColor
+import android.webkit.ConsoleMessage
+import android.webkit.WebChromeClient
 import android.webkit.WebView
+import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -163,6 +166,12 @@ private fun GameView(html: String, modifier: Modifier = Modifier) {
         factory = { ctx ->
             WebView(ctx).apply {
                 setBackgroundColor(AndroidColor.BLACK)
+                webChromeClient = object : WebChromeClient() {
+                    override fun onConsoleMessage(m: ConsoleMessage): Boolean {
+                        Log.i("Tab", "webview console: ${m.messageLevel()} ${m.message()} @${m.lineNumber()}")
+                        return true
+                    }
+                }
                 settings.javaScriptEnabled = true
                 settings.allowFileAccess = false
                 settings.blockNetworkLoads = true

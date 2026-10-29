@@ -88,6 +88,9 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
                         if (page == null) {
                             _state.update { it.copy(error = verdict.reason, metrics = summary) }
                         } else {
+                            runCatching {
+                                java.io.File(appContext.filesDir, "last_game.html").writeText(page)
+                            }
                             _state.update { st ->
                                 st.copy(
                                     history = (st.history + listOfNotNull(st.html.ifBlank { null })).takeLast(10),
