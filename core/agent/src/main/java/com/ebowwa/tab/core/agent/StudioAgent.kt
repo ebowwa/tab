@@ -52,7 +52,7 @@ class StudioAgent {
         engine: PlanEngine,
         userPrompt: String,
     ): Result<GenerationResult> {
-        val result = engine.generate(SYSTEM_INSTRUCTION, userPrompt, maxTokens = 1600)
+        val result = engine.generate(SYSTEM_INSTRUCTION, userPrompt, maxTokens = 2600)
         result.onSuccess { r -> logMetrics(userPrompt, r, "write", engine) }
         return result
     }
@@ -71,7 +71,7 @@ class StudioAgent {
             appendLine("Your previous attempt:")
             appendLine(brokenHtml.take(5000))
         }
-        val result = engine.generate(SYSTEM_INSTRUCTION, prompt, maxTokens = 1600)
+        val result = engine.generate(SYSTEM_INSTRUCTION, prompt, maxTokens = 2600)
         result.onSuccess { r -> logMetrics("repair", r, "repair", engine) }
         return result
     }
@@ -97,7 +97,7 @@ class StudioAgent {
             Hard rules:
             - Single file. All CSS and JavaScript inline. No external resources at all.
             - One <canvas>. Do not size it in CSS; the host sizes it to the window.
-            - Up to about 1800 characters.
+            - Keep the whole file under about 2200 characters.
 
             The game MUST have all of these, or it is not finished:
             1. A player entity the user controls.
@@ -147,23 +147,10 @@ object HtmlValidator {
             return Verdict(null, "Rejected: generated markup uses \"$hit\", which reaches outside the page.")
         }
 
-        // Detect the premature-</script> failure precisely: strip script/style blocks AND
-        // tags, then look for real code constructs in what is left. Matching the bare word
-        // "function " rejected valid games whose text happened to contain it.
-        val withoutCode = cleaned
-            .replace(Regex("<script[^>]*>.*?</script>", RegexOption.DOT_MATCHES_ALL), " ")
-            .replace(Regex("<style[^>]*>.*?</style>", RegexOption.DOT_MATCHES_ALL), " ")
-            .replace(Regex("<[^>]*>"), " ")
-        val leaked = Regex("""function\s+[A-Za-z_$][\w$]*\s*\(""").containsMatchIn(withoutCode) ||
-            withoutCode.contains("requestAnimationFrame(") ||
-            withoutCode.contains("addEventListener(") ||
-            Regex("""\bctx\.[a-zA-Z]+\(""").containsMatchIn(withoutCode)
-        if (leaked) {
-            return Verdict(
-                null,
-                "Rejected: code leaked outside a <script> tag, so it never runs.",
-            )
-        }
+        // Deliberately NOT rejecting on code that appears outside a <script> block. The
+        // check produced false positives that blocked valid games outright, and the failure
+        // it targeted surfaces anyway: the page throws, the WebView reports it, and the
+        // repair pass rewrites the document. Rejecting up front loses games we could fix.
 
         if (!cleaned.contains("</html>", ignoreCase = true)) {
             return Verdict(null, "The document was cut off before it finished. Try again, or ask for something simpler.")

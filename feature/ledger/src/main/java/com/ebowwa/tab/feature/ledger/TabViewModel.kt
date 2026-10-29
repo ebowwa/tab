@@ -155,6 +155,24 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
 
                 if (page == null) {
                     _state.update { it.copy(error = verdict.reason, metrics = summary) }
+                    // A truncated document is recoverable: ask for a shorter complete one
+                    // rather than making the user retype the prompt.
+                    val reason = verdict.reason.orEmpty()
+                    if (reason.contains("cut off") && repairAttempts < 2 && repairOf == null) {
+                        repairAttempts++
+                        viewModelScope.launch {
+                            _state.update { it.copy(busy = true) }
+                            try {
+                                attempt(
+                                    prompt,
+                                    (r.text) to "Your previous answer was cut off before it finished. " +
+                                        "Write a complete but SHORTER game that fits, and end with </html>.",
+                                )
+                            } finally {
+                                _state.update { it.copy(busy = false) }
+                            }
+                        }
+                    }
                 } else {
                     runCatching { java.io.File(appContext.filesDir, "last_game.html").writeText(page) }
                     _state.update { st ->
