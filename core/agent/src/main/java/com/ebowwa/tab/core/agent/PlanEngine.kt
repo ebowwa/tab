@@ -13,6 +13,7 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -64,12 +65,18 @@ class NanoEngine(private val model: GenerativeModel) : PlanEngine {
         prompt: String,
         maxTokens: Int,
     ): Result<GenerationResult> = runCatching {
+        // ML Kit keeps an implicit session and cache across calls, so a new prompt was being
+        // answered in the context of the previous game (ask for hamburgers, get fish). Give
+        // every request its own session and drop the implicit cache.
+        runCatching { model.clearImplicitCaches() }
+
         val request = generateContentRequest(
             SystemInstruction(systemInstruction),
             TextPart(prompt),
         ) {
             temperature = 0.0f
             maxOutputTokens = maxTokens
+            sessionId = UUID.randomUUID().toString()
         }
 
         val promptTokens = runCatching { model.countTokens(request).totalTokens }.getOrDefault(-1)
