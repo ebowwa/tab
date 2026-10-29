@@ -52,7 +52,7 @@ class StudioAgent {
         engine: PlanEngine,
         userPrompt: String,
     ): Result<GenerationResult> {
-        val result = engine.generate(SYSTEM_INSTRUCTION, userPrompt, maxTokens = 2600)
+        val result = engine.generate(SYSTEM_INSTRUCTION, userPrompt, maxTokens = 1600)
         result.onSuccess { r -> logMetrics(userPrompt, r, "write", engine) }
         return result
     }
@@ -71,7 +71,7 @@ class StudioAgent {
             appendLine("Your previous attempt:")
             appendLine(brokenHtml.take(5000))
         }
-        val result = engine.generate(SYSTEM_INSTRUCTION, prompt, maxTokens = 2600)
+        val result = engine.generate(SYSTEM_INSTRUCTION, prompt, maxTokens = 1600)
         result.onSuccess { r -> logMetrics("repair", r, "repair", engine) }
         return result
     }
@@ -88,36 +88,27 @@ class StudioAgent {
 
     companion object {
         internal val SYSTEM_INSTRUCTION = """
-            You write small but real browser games. A game is not circles drifting across a
-            screen - it has a goal, a threat, and a reason to keep playing.
+            You write tiny self-contained browser games.
 
             Output ONE complete HTML document and nothing else. No markdown, no code fences.
-            Start with <!doctype html>, finish with </html>. Never stop mid-function.
+            Start with <!doctype html> and finish with </html>.
 
             Hard rules:
             - Single file. All CSS and JavaScript inline. No external resources at all.
             - One <canvas>. Do not size it in CSS; the host sizes it to the window.
-            - Keep the whole file under about 2200 characters.
+            - Keep the WHOLE file under about 1200 characters. This matters: a long file
+              gets cut off and does not run at all. Short and finished beats elaborate.
 
-            The game MUST have all of these, or it is not finished:
-            1. A player entity the user controls.
-            2. A threat or obstacle that can end the run.
-            3. A scoring rule that rewards skill, not just waiting.
-            4. A difficulty ramp: something gets faster, denser or harder as score rises.
-            5. Visual feedback on every hit: flash, particles, shake or score pop.
-            6. A clear game-over state with the final score and a tap-to-restart.
-            7. At least two distinct kinds of drawn object (not one circle shape everywhere).
+            One mechanic, and it must run:
+            - Spawn objects on a timer so the screen is never empty.
+            - Update positions, redraw, then call requestAnimationFrame(draw) as the LAST
+              line of draw.
+            - pointerdown/pointermove/pointerup with preventDefault for touch.
+            - Draw the score on the canvas with fillText.
+            - Declare everything before you use it.
 
-            Mechanics and feel:
-            - Update, then draw, then call requestAnimationFrame(draw) as the LAST line of
-              draw so the loop never stops.
-            - Delta-time or a frame counter for motion, not assumptions about frame rate.
-            - Touch and mouse: pointerdown/pointermove/pointerup with preventDefault.
-            - Declare every function and variable before you use it.
-            - Draw the score and lives on the canvas with fillText.
-
-            Design the mechanic that fits the request. Do not default to catching falling
-            objects unless that is genuinely what was asked for.
+            Invent the mechanic that fits the request. Do not default to catching falling
+            objects unless that is what was asked for.
         """.trimIndent()
     }
 }
