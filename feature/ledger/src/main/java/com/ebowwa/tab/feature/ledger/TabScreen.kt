@@ -57,7 +57,11 @@ fun TabScreen(vm: StudioViewModel) {
                     Column {
                         Text("Studio", fontWeight = FontWeight.SemiBold)
                         Text(
-                            text = state.metrics.ifBlank { "on-device Gemini Nano" },
+                            text = when {
+                                state.busy -> "writing game... ${state.elapsed}s"
+                                state.metrics.isNotBlank() -> state.metrics
+                                else -> "on-device Gemini Nano"
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

@@ -7,9 +7,9 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.ebowwa.tab.core.agent.GeminiRestEngine
 import com.ebowwa.tab.core.agent.HtmlValidator
-import com.ebowwa.tab.core.agent.PlanEngine
 import com.ebowwa.tab.core.agent.ModelDownload
 import com.ebowwa.tab.core.agent.ModelStatus
+import com.ebowwa.tab.core.agent.PlanEngine
 import com.ebowwa.tab.core.agent.StudioAgent
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +28,7 @@ data class UiState(
     val error: String? = null,
     val metrics: String = "",
     val apiKeyPresent: Boolean = false,
+    val elapsed: Int = 0,
 )
 
 class StudioViewModel(private val appContext: Context) : ViewModel() {
@@ -35,9 +36,29 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
     private val agent = StudioAgent()
     private val prefs = appContext.getSharedPreferences("studio_prefs", Context.MODE_PRIVATE)
 
-    private fun apiKey(): String = prefs.getString("gemini_api_key", "").orEmpty()
+    private var lastPrompt = ""
+    private var repairAttempts = 0
+    private var repairing = false
+
+    private val _state = MutableStateFlow(
+        UiState(apiKeyPresent = prefs.getString(KEY_API, "").orEmpty().isNotBlank()),
+    )
+    val state: StateFlow<UiState> = _state.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            _state.update {
+                it.copy(status = runCatching { agent.status() }.getOrElse { ModelStatus.UNAVAILABLE })
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- engines
+
+    private fun apiKey(): String = prefs.getString(KEY_API, "").orEmpty()
+
     private fun modelName(): String =
-        prefs.getString("gemini_model", GeminiRestEngine.DEFAULT_MODEL).orEmpty()
+        prefs.getString(KEY_MODEL, GeminiRestEngine.DEFAULT_MODEL).orEmpty()
             .ifBlank { GeminiRestEngine.DEFAULT_MODEL }
 
     /** Cloud when a key is configured, otherwise the on-device model. */
@@ -46,24 +67,13 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
 
     fun saveApiKey(key: String, model: String) {
         prefs.edit()
-            .putString("gemini_api_key", key.trim())
-            .putString("gemini_model", model.trim().ifBlank { GeminiRestEngine.DEFAULT_MODEL })
+            .putString(KEY_API, key.trim())
+            .putString(KEY_MODEL, model.trim().ifBlank { GeminiRestEngine.DEFAULT_MODEL })
             .apply()
         _state.update { it.copy(apiKeyPresent = key.isNotBlank()) }
     }
 
-    private val runtimeErrors = java.util.Collections.synchronizedList(mutableListOf<String>())
-    private var repairAttempts = 0
-    private var lastPrompt = ""
-
-    private val _state = MutableStateFlow(UiState())
-    val state: StateFlow<UiState> = _state.asStateFlow()
-
-    init {
-        viewModelScope.launch {
-            _state.update { it.copy(status = runCatching { agent.status() }.getOrElse { ModelStatus.UNAVAILABLE }) }
-        }
-    }
+    // ---------------------------------------------------------------- model download
 
     fun prepareModel() {
         viewModelScope.launch {
@@ -79,13 +89,15 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
                         is ModelDownload.Progress -> {
                             val label = if (total > 0L) {
                                 "Downloading model... ${(s.bytesDownloaded * 100 / total).toInt()}%"
-                            } else "Downloading model..."
+                            } else {
+                                "Downloading model..."
+                            }
                             _state.update { it.copy(downloadProgress = label) }
                         }
-                        is ModelDownload.Completed -> _state.update { it.copy(downloadProgress = "Warming up...") }
-                        is ModelDownload.Failed -> _state.update {
-                            it.copy(downloadProgress = null, error = "Download failed: ${s.message}")
-                        }
+                        is ModelDownload.Completed ->
+                            _state.update { it.copy(downloadProgress = "Warming up...") }
+                        is ModelDownload.Failed ->
+                            _state.update { it.copy(downloadProgress = null, error = "Download failed: ${s.message}") }
                     }
                 }
             }.onFailure { e -> _state.update { it.copy(downloadProgress = null, error = e.message) } }
@@ -99,17 +111,27 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
         }
     }
 
+    // ---------------------------------------------------------------- generation
+
     fun generate(prompt: String) {
         val p = prompt.trim()
         if (p.isEmpty() || _state.value.busy) return
         lastPrompt = p
         repairAttempts = 0
-        runtimeErrors.clear()
         viewModelScope.launch {
-            _state.update { it.copy(busy = true, error = null, metrics = "") }
+            _state.update { it.copy(busy = true, error = null, metrics = "", elapsed = 0) }
+            val ticker = viewModelScope.launch {
+                var seconds = 0
+                while (true) {
+                    delay(1000)
+                    seconds++
+                    _state.update { it.copy(elapsed = seconds) }
+                }
+            }
             try {
                 attempt(p, repairOf = null)
             } finally {
+                ticker.cancel()
                 _state.update { it.copy(busy = false) }
             }
         }
@@ -122,13 +144,15 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
         } else {
             agent.repair(eng, prompt, repairOf.first, repairOf.second)
         }
+
         result.fold(
             onSuccess = { r ->
                 val verdict = HtmlValidator.validate(r.text)
                 val page = verdict.html
                 val tok = if (r.ttftMs > 0L) String.format(Locale.US, "%.0f", r.tokPerSec) else "n/a"
-                val suffix = if (repairOf != null) " | self-repaired" else ""
+                val suffix = if (repairOf != null) " | repaired" else ""
                 val summary = "${r.outputTokens} tok | ${r.totalMs} ms | $tok tok/s$suffix"
+
                 if (page == null) {
                     _state.update { it.copy(error = verdict.reason, metrics = summary) }
                 } else {
@@ -146,10 +170,7 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
         )
     }
 
-    /**
-     * Reported by the WebView when the generated page throws. Repairs are triggered by the
-     * error arriving, not by a timer: a fixed delay missed errors that surfaced later.
-     */
+    /** Reported by the WebView when the generated page throws. */
     fun onRuntimeError(message: String) {
         android.util.Log.w("Tab", "webview error: $message")
         if (repairing || _state.value.busy || repairAttempts >= 2) return
@@ -170,7 +191,7 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
         }
     }
 
-    private var repairing = false
+    // ---------------------------------------------------------------- ui
 
     fun undo() {
         val h = _state.value.history
@@ -178,9 +199,14 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
         _state.update { it.copy(html = h.last(), history = h.dropLast(1)) }
     }
 
-    fun dismissError() { _state.update { it.copy(error = null) } }
+    fun dismissError() {
+        _state.update { it.copy(error = null) }
+    }
 
     companion object {
+        private const val KEY_API = "gemini_api_key"
+        private const val KEY_MODEL = "gemini_model"
+
         fun factory(context: Context) = viewModelFactory {
             initializer { StudioViewModel(context.applicationContext) }
         }

@@ -52,7 +52,7 @@ class StudioAgent {
         engine: PlanEngine,
         userPrompt: String,
     ): Result<GenerationResult> {
-        val result = engine.generate(SYSTEM_INSTRUCTION, userPrompt, maxTokens = 3000)
+        val result = engine.generate(SYSTEM_INSTRUCTION, userPrompt, maxTokens = 1600)
         result.onSuccess { r -> logMetrics(userPrompt, r, "write", engine) }
         return result
     }
@@ -71,7 +71,7 @@ class StudioAgent {
             appendLine("Your previous attempt:")
             appendLine(brokenHtml.take(5000))
         }
-        val result = engine.generate(SYSTEM_INSTRUCTION, prompt, maxTokens = 3000)
+        val result = engine.generate(SYSTEM_INSTRUCTION, prompt, maxTokens = 1600)
         result.onSuccess { r -> logMetrics("repair", r, "repair", engine) }
         return result
     }
@@ -97,7 +97,7 @@ class StudioAgent {
             Hard rules:
             - Single file. All CSS and JavaScript inline. No external resources at all.
             - One <canvas>. Do not size it in CSS; the host sizes it to the window.
-            - Up to about 3000 characters. Use the room.
+            - Up to about 1800 characters.
 
             The game MUST have all of these, or it is not finished:
             1. A player entity the user controls.
