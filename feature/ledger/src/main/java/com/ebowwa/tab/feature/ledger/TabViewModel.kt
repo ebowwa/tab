@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.ebowwa.tab.core.agent.GameAudit
 import com.ebowwa.tab.core.agent.GeminiRestEngine
 import com.ebowwa.tab.core.agent.HtmlValidator
 import com.ebowwa.tab.core.agent.ModelDownload
@@ -23,6 +24,7 @@ data class UiState(
     val html: String = "",
     val history: List<String> = emptyList(),
     val busy: Boolean = false,
+    val phase: String = "",
     val status: ModelStatus = ModelStatus.UNKNOWN,
     val downloadProgress: String? = null,
     val error: String? = null,
@@ -37,8 +39,6 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
     private val prefs = appContext.getSharedPreferences("studio_prefs", Context.MODE_PRIVATE)
 
     private var lastPrompt = ""
-    private var repairAttempts = 0
-    private var repairing = false
 
     private val _state = MutableStateFlow(
         UiState(apiKeyPresent = prefs.getString(KEY_API, "").orEmpty().isNotBlank()),
@@ -61,7 +61,6 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
         prefs.getString(KEY_MODEL, GeminiRestEngine.DEFAULT_MODEL).orEmpty()
             .ifBlank { GeminiRestEngine.DEFAULT_MODEL }
 
-    /** Cloud when a key is configured, otherwise the on-device model. */
     private fun engine(): PlanEngine =
         if (apiKey().isNotBlank()) agent.cloudEngine(apiKey(), modelName()) else agent.engine
 
@@ -111,15 +110,14 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
         }
     }
 
-    // ---------------------------------------------------------------- generation
+    // ---------------------------------------------------------------- generate + iterate
 
     fun generate(prompt: String) {
         val p = prompt.trim()
         if (p.isEmpty() || _state.value.busy) return
         lastPrompt = p
-        repairAttempts = 0
         viewModelScope.launch {
-            _state.update { it.copy(busy = true, error = null, metrics = "", elapsed = 0) }
+            _state.update { it.copy(busy = true, error = null, metrics = "", elapsed = 0, phase = "writing") }
             val ticker = viewModelScope.launch {
                 var seconds = 0
                 while (true) {
@@ -129,84 +127,81 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
                 }
             }
             try {
-                attempt(p, repairOf = null)
+                iterate(p)
             } finally {
                 ticker.cancel()
-                _state.update { it.copy(busy = false) }
+                _state.update { it.copy(busy = false, phase = "") }
             }
         }
     }
 
-    private suspend fun attempt(prompt: String, repairOf: Pair<String, String>?) {
+    /**
+     * Generate, then check the model's own work and feed the defects back.
+     *
+     * Two independent checks: [GameAudit] is deterministic and cannot be talked out of a
+     * verdict; [StudioAgent.critique] has the model read its game against a checklist. Both
+     * produce problems, which drive the next rewrite. Stops as soon as a round comes back
+     * clean, or after [MAX_ROUNDS].
+     */
+    private suspend fun iterate(prompt: String) {
         val eng = engine()
-        val result = if (repairOf == null) {
-            agent.generate(eng, prompt)
-        } else {
-            agent.repair(eng, prompt, repairOf.first, repairOf.second)
+
+        _state.update { it.copy(phase = "writing") }
+        val first = agent.generate(eng, prompt).getOrElse {
+            _state.update { st -> st.copy(error = it.message ?: "generation failed") }
+            return
+        }
+        var html = HtmlValidator.validate(first.text).html ?: run {
+            _state.update { st -> st.copy(error = HtmlValidator.validate(first.text).reason, metrics = summary(first)) }
+            return
+        }
+        _state.update { it.copy(metrics = summary(first)) }
+
+        var round = 0
+        while (round < MAX_ROUNDS) {
+            round++
+            _state.update { it.copy(phase = "checking $round/$MAX_ROUNDS") }
+
+            val mechanical = GameAudit.issues(html)
+            val critique = agent.critique(eng, prompt, html).getOrNull()
+            val problems = (mechanical + (critique?.problems ?: emptyList())).distinct()
+
+            if (problems.isEmpty()) {
+                accept(html, "checked ${round}x")
+                return
+            }
+
+            _state.update { it.copy(phase = "fixing $round/$MAX_ROUNDS") }
+            val fixed = agent.repair(eng, prompt, html, problems.joinToString("; ")).getOrNull()
+                ?: break
+            val validated = HtmlValidator.validate(fixed.text).html ?: continue
+            html = validated
+            _state.update { it.copy(metrics = summary(fixed)) }
         }
 
-        result.fold(
-            onSuccess = { r ->
-                val verdict = HtmlValidator.validate(r.text)
-                val page = verdict.html
-                val tok = if (r.ttftMs > 0L) String.format(Locale.US, "%.0f", r.tokPerSec) else "n/a"
-                val suffix = if (repairOf != null) " | repaired" else ""
-                val summary = "${r.outputTokens} tok | ${r.totalMs} ms | $tok tok/s$suffix"
+        // Ran out of rounds: keep the best document we have, but say it is unverified.
+        accept(html, "best effort after $MAX_ROUNDS")
+    }
 
-                if (page == null) {
-                    _state.update { it.copy(error = verdict.reason, metrics = summary) }
-                    // A truncated document is recoverable: ask for a shorter complete one
-                    // rather than making the user retype the prompt.
-                    val reason = verdict.reason.orEmpty()
-                    if (reason.contains("cut off") && repairAttempts < 2 && repairOf == null) {
-                        repairAttempts++
-                        viewModelScope.launch {
-                            _state.update { it.copy(busy = true) }
-                            try {
-                                attempt(
-                                    prompt,
-                                    (r.text) to "Your previous answer was cut off before it finished. " +
-                                        "Write a complete but SHORTER game that fits, and end with </html>.",
-                                )
-                            } finally {
-                                _state.update { it.copy(busy = false) }
-                            }
-                        }
-                    }
-                } else {
-                    runCatching { java.io.File(appContext.filesDir, "last_game.html").writeText(page) }
-                    _state.update { st ->
-                        st.copy(
-                            history = (st.history + listOfNotNull(st.html.ifBlank { null })).takeLast(10),
-                            html = page,
-                            metrics = summary,
-                        )
-                    }
-                }
-            },
-            onFailure = { e -> _state.update { it.copy(error = e.message ?: "generation failed") } },
-        )
+    private fun accept(html: String, note: String) {
+        runCatching { java.io.File(appContext.filesDir, "last_game.html").writeText(html) }
+        _state.update { st ->
+            st.copy(
+                history = (st.history + listOfNotNull(st.html.ifBlank { null })).takeLast(10),
+                html = html,
+                metrics = if (st.metrics.isBlank()) note else "${st.metrics} | $note",
+            )
+        }
+    }
+
+    private fun summary(r: com.ebowwa.tab.core.agent.GenerationResult): String {
+        val tok = if (r.ttftMs > 0L) String.format(Locale.US, "%.0f", r.tokPerSec) else "n/a"
+        return "${r.outputTokens} tok | ${r.totalMs} ms | $tok tok/s"
     }
 
     /** Reported by the WebView when the generated page throws. */
     fun onRuntimeError(message: String) {
         android.util.Log.w("Tab", "webview error: $message")
-        if (repairing || _state.value.busy || repairAttempts >= 2) return
-        val prompt = lastPrompt
-        if (prompt.isBlank() || _state.value.html.isBlank()) return
-        repairing = true
-        viewModelScope.launch {
-            delay(400)
-            val broken = _state.value.html
-            repairAttempts++
-            _state.update { it.copy(busy = true, error = null) }
-            try {
-                attempt(prompt, broken to message)
-            } finally {
-                _state.update { it.copy(busy = false) }
-                repairing = false
-            }
-        }
     }
 
     // ---------------------------------------------------------------- ui
@@ -224,6 +219,7 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
     companion object {
         private const val KEY_API = "gemini_api_key"
         private const val KEY_MODEL = "gemini_model"
+        private const val MAX_ROUNDS = 3
 
         fun factory(context: Context) = viewModelFactory {
             initializer { StudioViewModel(context.applicationContext) }

@@ -6,6 +6,9 @@ import com.google.mlkit.genai.prompt.Generation
 import com.google.mlkit.genai.prompt.GenerativeModel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
 import java.util.Locale
 
 /**
@@ -76,6 +79,34 @@ class StudioAgent {
         return result
     }
 
+    @Serializable
+    data class Critique(val ok: Boolean = true, val problems: List<String> = emptyList())
+
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    /**
+     * The model reads its own game back and judges it against a checklist. Its problems are
+     * fed into the repair pass, so this is a self-check rather than a self-report.
+     */
+    suspend fun critique(
+        engine: PlanEngine,
+        request: String,
+        html: String,
+    ): Result<Critique> = engine.generate(CRITIQUE_INSTRUCTION, buildString {
+        appendLine("The user asked for: $request")
+        appendLine("The game document:")
+        appendLine(html.take(6000))
+    }, maxTokens = 400).map { r ->
+        val a = r.text.indexOf('{')
+        val b = r.text.lastIndexOf('}')
+        if (a >= 0 && b > a) {
+            runCatching { json.decodeFromString<Critique>(r.text.substring(a, b + 1)) }
+                .getOrDefault(Critique())
+        } else {
+            Critique()
+        }
+    }
+
     private fun logMetrics(prompt: String, r: GenerationResult, tag: String, engine: PlanEngine) {
         val tok = if (r.ttftMs > 0L) String.format(Locale.US, "%.0f", r.tokPerSec) else "n/a"
         Log.i(
@@ -87,6 +118,26 @@ class StudioAgent {
     }
 
     companion object {
+        internal val CRITIQUE_INSTRUCTION = """
+            You are reviewing a small browser game someone else wrote.
+
+            Judge it against these requirements:
+            1. A player entity the user controls.
+            2. A threat or obstacle.
+            3. A scoring rule.
+            4. It visibly animates (an animation loop actually runs).
+            5. Touch controls work on a phone.
+            6. The score is visible on screen.
+            7. It ends or can be restarted.
+
+            Answer with ONE JSON object and nothing else:
+            {"ok":true|false,"problems":["<short, specific problem>", ...]}
+
+            ok is true only if the game runs and meets at least requirements 1, 4 and 5.
+            List only real defects you can see in the code. Do not invent problems, and do not
+            suggest style changes. If it is fine, return {"ok":true,"problems":[]}.
+        """.trimIndent()
+
         internal val SYSTEM_INSTRUCTION = """
             You write tiny self-contained browser games.
 

@@ -58,7 +58,7 @@ fun TabScreen(vm: StudioViewModel) {
                         Text("Studio", fontWeight = FontWeight.SemiBold)
                         Text(
                             text = when {
-                                state.busy -> "writing game... ${state.elapsed}s"
+                                state.busy -> "${state.phase}... ${state.elapsed}s"
                                 state.metrics.isNotBlank() -> state.metrics
                                 else -> "on-device Gemini Nano"
                             },
