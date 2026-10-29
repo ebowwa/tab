@@ -136,11 +136,27 @@ Dividing output tokens by *total* wall-clock silently folds prefill into the rat
 understates throughput, badly so for long prompts. This app streams specifically so it can
 timestamp the first callback and separate the two phases.
 
-Observed on a Pixel 11 Pro, `nano-v4-full`, 437-token prompt, 61-token JSON answer:
+Observed on a Pixel 11 Pro, `nano-v4-full`, 15 runs via `tools/bench.sh` (3 per prompt):
 
-```
-promptTokens=437 outputTokens=61 ttftMs=226 totalMs=756 tokPerSec=115.1
-```
+| prompt | out tokens | TTFT | total | decode tok/s |
+| --- | --- | --- | --- | --- |
+| "I paid 84 dollars for dinner, split it with Ana and Ben" | 61 | 232 ms | 753 ms | 117.0 |
+| "Add a 12.50 coffee, I paid, split three ways with Ana and Cy" | 66 | 225 ms | 830 ms | 109.1 |
+| "Who owes me money?" | 24 | 196 ms | 287 ms | 264.8 |
+| "Delete the coffee expense" | 28 | 225 ms | 412 ms | 149.6 |
+| "What's the total so far?" | 29 | 196 ms | 293 ms | 298.1 |
+
+Two things to read off that table carefully:
+
+- **tok/s is not flat.** Short answers (24–29 tokens) report ~265–300 tok/s, long ones
+  (61–66) report ~109–117. So quote the range for a given output length, not a single
+  headline number — a grand mean of ~188 across this suite is a property of the suite, not
+  of the model.
+- **TTFT is remarkably stable** (196–232 ms) while prompt length barely moves it across
+  these sizes (~426–442 tokens). Prefill is not the bottleneck here; generation length is.
+
+`countTokens` is called twice per run (once for the request, once for the answer text), so
+these numbers include that bookkeeping — the wall-clock timings do not.
 
 ## 7. AppFunctions: what the KSP processor generates
 
