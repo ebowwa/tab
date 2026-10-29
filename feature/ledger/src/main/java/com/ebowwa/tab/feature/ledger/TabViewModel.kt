@@ -5,7 +5,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.ebowwa.tab.core.agent.GeminiRestEngine
 import com.ebowwa.tab.core.agent.HtmlValidator
+import com.ebowwa.tab.core.agent.PlanEngine
 import com.ebowwa.tab.core.agent.ModelDownload
 import com.ebowwa.tab.core.agent.ModelStatus
 import com.ebowwa.tab.core.agent.StudioAgent
@@ -25,11 +27,30 @@ data class UiState(
     val downloadProgress: String? = null,
     val error: String? = null,
     val metrics: String = "",
+    val apiKeyPresent: Boolean = false,
 )
 
 class StudioViewModel(private val appContext: Context) : ViewModel() {
 
     private val agent = StudioAgent()
+    private val prefs = appContext.getSharedPreferences("studio_prefs", Context.MODE_PRIVATE)
+
+    private fun apiKey(): String = prefs.getString("gemini_api_key", "").orEmpty()
+    private fun modelName(): String =
+        prefs.getString("gemini_model", GeminiRestEngine.DEFAULT_MODEL).orEmpty()
+            .ifBlank { GeminiRestEngine.DEFAULT_MODEL }
+
+    /** Cloud when a key is configured, otherwise the on-device model. */
+    private fun engine(): PlanEngine =
+        if (apiKey().isNotBlank()) agent.cloudEngine(apiKey(), modelName()) else agent.engine
+
+    fun saveApiKey(key: String, model: String) {
+        prefs.edit()
+            .putString("gemini_api_key", key.trim())
+            .putString("gemini_model", model.trim().ifBlank { GeminiRestEngine.DEFAULT_MODEL })
+            .apply()
+        _state.update { it.copy(apiKeyPresent = key.isNotBlank()) }
+    }
 
     private val runtimeErrors = java.util.Collections.synchronizedList(mutableListOf<String>())
     private var repairAttempts = 0
@@ -95,10 +116,11 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
     }
 
     private suspend fun attempt(prompt: String, repairOf: Pair<String, String>?) {
+        val eng = engine()
         val result = if (repairOf == null) {
-            agent.generate(prompt)
+            agent.generate(eng, prompt)
         } else {
-            agent.repair(prompt, repairOf.first, repairOf.second)
+            agent.repair(eng, prompt, repairOf.first, repairOf.second)
         }
         result.fold(
             onSuccess = { r ->

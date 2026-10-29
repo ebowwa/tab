@@ -41,6 +41,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ebowwa.tab.core.agent.GeminiRestEngine
 import com.ebowwa.tab.core.agent.ModelStatus
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -96,6 +97,29 @@ fun TabScreen(vm: StudioViewModel) {
                             Button(onClick = vm::prepareModel) { Text("Download model") }
                         }
                     }
+                }
+            }
+
+            if (!state.apiKeyPresent) {
+                var key by remember { mutableStateOf("") }
+                var model by remember { mutableStateOf(GeminiRestEngine.DEFAULT_MODEL) }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = key,
+                        onValueChange = { key = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("optional: Gemini API key for bigger games") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(18.dp),
+                    )
+                    Button(
+                        onClick = { vm.saveApiKey(key, model) },
+                        enabled = key.isNotBlank(),
+                    ) { Text("Use") }
                 }
             }
 

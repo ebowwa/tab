@@ -44,14 +44,26 @@ class StudioAgent {
         runCatching { model.warmup() }
     }
 
-    suspend fun generate(userPrompt: String): Result<GenerationResult> {
-        val result = engine.generate(SYSTEM_INSTRUCTION, userPrompt, maxTokens = 2048)
-        result.onSuccess { r -> logMetrics(userPrompt, r, "write") }
+    /** Cloud engine when a key is configured, otherwise Nano on-device. */
+    fun cloudEngine(apiKey: String, modelName: String): PlanEngine =
+        GeminiRestEngine(apiKey, modelName)
+
+    suspend fun generate(
+        engine: PlanEngine,
+        userPrompt: String,
+    ): Result<GenerationResult> {
+        val result = engine.generate(SYSTEM_INSTRUCTION, userPrompt, maxTokens = 3000)
+        result.onSuccess { r -> logMetrics(userPrompt, r, "write", engine) }
         return result
     }
 
     /** Second pass: hand the model its own broken code plus the runtime error. */
-    suspend fun repair(originalPrompt: String, brokenHtml: String, error: String): Result<GenerationResult> {
+    suspend fun repair(
+        engine: PlanEngine,
+        originalPrompt: String,
+        brokenHtml: String,
+        error: String,
+    ): Result<GenerationResult> {
         val prompt = buildString {
             appendLine("The game you wrote for \"$originalPrompt\" threw an error when it ran.")
             appendLine("Error: ${error.take(400)}")
@@ -59,12 +71,12 @@ class StudioAgent {
             appendLine("Your previous attempt:")
             appendLine(brokenHtml.take(5000))
         }
-        val result = engine.generate(SYSTEM_INSTRUCTION, prompt, maxTokens = 2048)
-        result.onSuccess { r -> logMetrics("repair", r, "repair") }
+        val result = engine.generate(SYSTEM_INSTRUCTION, prompt, maxTokens = 3000)
+        result.onSuccess { r -> logMetrics("repair", r, "repair", engine) }
         return result
     }
 
-    private fun logMetrics(prompt: String, r: GenerationResult, tag: String) {
+    private fun logMetrics(prompt: String, r: GenerationResult, tag: String, engine: PlanEngine) {
         val tok = if (r.ttftMs > 0L) String.format(Locale.US, "%.0f", r.tokPerSec) else "n/a"
         Log.i(
             "Tab",
@@ -76,28 +88,35 @@ class StudioAgent {
 
     companion object {
         internal val SYSTEM_INSTRUCTION = """
-            You write tiny self-contained browser games.
+            You write small but real browser games. A game is not circles drifting across a
+            screen - it has a goal, a threat, and a reason to keep playing.
 
-            Output ONE complete HTML document and nothing else. No markdown, no code fences,
-            no explanation before or after. Start with <!doctype html>, finish with </html>.
-            Never stop mid-function.
+            Output ONE complete HTML document and nothing else. No markdown, no code fences.
+            Start with <!doctype html>, finish with </html>. Never stop mid-function.
 
             Hard rules:
-            - Single file. All CSS and JavaScript inline, inside the document.
-            - No external resources of any kind: no src=, no href=, no CDN, no fonts, no images.
-            - One <canvas>. Do not set its size in CSS; the host sizes it to the window.
-            - Keep the file under about 2000 characters.
+            - Single file. All CSS and JavaScript inline. No external resources at all.
+            - One <canvas>. Do not size it in CSS; the host sizes it to the window.
+            - Up to about 3000 characters. Use the room.
 
-            It must visibly animate and be playable:
-            - Spawn new objects on a timer so the screen is never empty. Never rely on a single
-              starting object.
-            - Update positions, then redraw, then call requestAnimationFrame(draw) as the last
-              line of draw so the loop never stops.
+            The game MUST have all of these, or it is not finished:
+            1. A player entity the user controls.
+            2. A threat or obstacle that can end the run.
+            3. A scoring rule that rewards skill, not just waiting.
+            4. A difficulty ramp: something gets faster, denser or harder as score rises.
+            5. Visual feedback on every hit: flash, particles, shake or score pop.
+            6. A clear game-over state with the final score and a tap-to-restart.
+            7. At least two distinct kinds of drawn object (not one circle shape everywhere).
+
+            Mechanics and feel:
+            - Update, then draw, then call requestAnimationFrame(draw) as the LAST line of
+              draw so the loop never stops.
+            - Delta-time or a frame counter for motion, not assumptions about frame rate.
             - Touch and mouse: pointerdown/pointermove/pointerup with preventDefault.
-            - Draw the score on the canvas with fillText.
             - Declare every function and variable before you use it.
+            - Draw the score and lives on the canvas with fillText.
 
-            Invent the mechanic that fits the request. Do not default to catching falling
+            Design the mechanic that fits the request. Do not default to catching falling
             objects unless that is genuinely what was asked for.
         """.trimIndent()
     }
