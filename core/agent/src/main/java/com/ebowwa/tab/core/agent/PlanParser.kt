@@ -44,10 +44,18 @@ object PlanParser {
                         notes.add("Skipped \"$description\": \"${action.paidBy}\" is not a member.")
                         return@forEach
                     }
-                    val participants = action.participants.orEmpty()
+                    val requested = action.participants.orEmpty()
+                    val participants = requested
                         .mapNotNull { canonical(it, ledger) }
                         .distinct()
-                        .ifEmpty { listOf(payer) }
+                    val dropped = requested.filter { canonical(it, ledger) == null }
+                    if (dropped.isNotEmpty()) {
+                        notes.add("Ignored unknown participant(s) ${dropped.joinToString(", ")} in \"$description\".")
+                    }
+                    if (participants.isEmpty() && requested.isNotEmpty()) {
+                        notes.add("Skipped \"$description\": none of its participants are members.")
+                        return@forEach
+                    }
                     changes += Change.Add(
                         Expense(
                             id = UUID.randomUUID().toString().take(8),
@@ -65,13 +73,42 @@ object PlanParser {
                         notes.add("Skipped an update: no expense with id ${action.id}.")
                         return@forEach
                     }
-                    val payer = action.paidBy?.let { canonical(it, ledger) } ?: existing.paidBy
-                    val participants = action.participants?.mapNotNull { canonical(it, ledger) }
-                        ?.distinct()?.ifEmpty { null } ?: existing.participants
+                    // An update used to fall back to the old value on every invalid field and
+                    // say nothing, so the user was told a change happened that did not. Reject
+                    // the action with a visible note instead — same policy as "add".
+                    var payer = existing.paidBy
+                    if (action.paidBy != null) {
+                        val resolved = canonical(action.paidBy, ledger)
+                        if (resolved == null) {
+                            notes.add("Skipped update of \"${existing.description}\": \"${action.paidBy}\" is not a member.")
+                            return@forEach
+                        }
+                        payer = resolved
+                    }
+
+                    var amount = existing.amountCents
+                    if (action.amountCents != null) {
+                        if (action.amountCents <= 0L) {
+                            notes.add("Skipped update of \"${existing.description}\": amount must be positive.")
+                            return@forEach
+                        }
+                        amount = action.amountCents
+                    }
+
+                    var participants = existing.participants
+                    if (action.participants != null) {
+                        val resolved = action.participants.mapNotNull { canonical(it, ledger) }.distinct()
+                        if (resolved.isEmpty()) {
+                            notes.add("Skipped update of \"${existing.description}\": no valid participants.")
+                            return@forEach
+                        }
+                        participants = resolved
+                    }
+
                     changes += Change.Update(
                         existing.copy(
                             description = action.description?.trim()?.ifEmpty { null } ?: existing.description,
-                            amountCents = action.amountCents?.takeIf { it > 0L } ?: existing.amountCents,
+                            amountCents = amount,
                             paidBy = payer,
                             participants = participants,
                         ),

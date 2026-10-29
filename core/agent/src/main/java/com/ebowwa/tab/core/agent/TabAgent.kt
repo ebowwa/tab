@@ -2,6 +2,7 @@ package com.ebowwa.tab.core.agent
 
 import android.content.Context
 import android.util.Log
+import com.ebowwa.tab.core.agent.BuildConfig
 import com.ebowwa.tab.core.data.LedgerStore
 import com.ebowwa.tab.core.model.Change
 import com.ebowwa.tab.core.model.Ledger
@@ -117,8 +118,17 @@ class TabAgent(
         result: GenerationResult?,
         ok: Boolean,
     ) {
-        val safePrompt = userText.replace("\"", "'").replace("\n", " ")
-        val tokPerSec = String.format(Locale.US, "%.1f", result?.tokPerSec ?: 0.0)
+        // Release builds must not write the user's prompts or ledger contents to logcat.
+        val safePrompt = if (BuildConfig.DEBUG) {
+            userText.replace("\"", "'").replace("\n", " ")
+        } else {
+            "<redacted>"
+        }
+        // Decode rate is only meaningful when prefill was actually measured. Without a
+        // streaming TTFT the honest answer is n/a, not output-tokens-over-wall-clock.
+        val tokPerSec = result?.let { r ->
+            if (r.ttftMs > 0L) String.format(Locale.US, "%.1f", r.tokPerSec) else "n/a"
+        } ?: "n/a"
         Log.i(
             "Tab",
             "metrics prompt=\"$safePrompt\" engine=\"${engine.label}\" ok=$ok " +

@@ -7,30 +7,56 @@ import com.ebowwa.tab.core.model.applyingAll
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
 
 /**
+ * Ledger + undo history as one persisted document.
+ *
+ * The undo stack is stored *with* the ledger on purpose. Keeping it in memory only meant a
+ * commit survived process death while its undo snapshot did not, so "one tap of Undo"
+ * quietly became false after the app was killed.
+ */
+@Serializable
+private data class PersistedState(
+    val ledger: Ledger = Ledger(),
+    val undo: List<Ledger> = emptyList(),
+)
+
+private data class Loaded(val ledger: Ledger, val undo: List<Ledger>, val error: String?)
+
+/**
  * Single source of truth for the ledger.
  *
- * Every mutation goes through [commit], which snapshots the previous ledger onto an
- * undo stack first. That is the whole safety story: an agent can propose a batch of
- * changes, the user approves it, and one tap puts the ledger back exactly as it was.
+ * Every mutation goes through [commit], which snapshots the previous ledger onto the undo
+ * stack first. Nothing a model produces reaches [commit] directly: the agent and the
+ * AppFunctions service both only [stage], and a human has to [applyRendered].
  */
 class LedgerStore private constructor(context: Context) {
 
-    private val file = File(context.applicationContext.filesDir, "ledger.json")
+    private val dir = context.applicationContext.filesDir
+    private val file = File(dir, "ledger.json")
+    private val tmp = File(dir, "ledger.json.tmp")
+    private val backup = File(dir, "ledger.json.bak")
+
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
     }
 
-    private val _ledger = MutableStateFlow(read())
+    private val loaded = read()
+
+    private val _ledger = MutableStateFlow(loaded.ledger)
     val ledger: StateFlow<Ledger> = _ledger.asStateFlow()
 
-    private val undoStack = ArrayDeque<Ledger>()
+    private val undoStack = ArrayDeque<Ledger>().apply { addAll(loaded.undo) }
+
+    /** Non-null when the last read or write failed; the UI surfaces this instead of lying. */
+    private val _storageError = MutableStateFlow(loaded.error)
+    val storageError: StateFlow<String?> = _storageError.asStateFlow()
 
     /**
      * Proposed-but-uncommitted changes. Shared by every surface: the in-app agent and the
@@ -42,25 +68,7 @@ class LedgerStore private constructor(context: Context) {
     val canUndo: Boolean
         @Synchronized get() = undoStack.isNotEmpty()
 
-    @Synchronized
-    fun commit(changes: List<Change>): Ledger {
-        if (changes.isEmpty()) return _ledger.value
-        val before = _ledger.value
-        val after = before.applyingAll(changes)
-        undoStack.addLast(before)
-        while (undoStack.size > 20) undoStack.removeFirst()
-        write(after)
-        _ledger.value = after
-        return after
-    }
-
-    @Synchronized
-    fun undo(): Boolean {
-        val previous = undoStack.removeLastOrNull() ?: return false
-        write(previous)
-        _ledger.value = previous
-        return true
-    }
+    // ---------------------------------------------------------------- staging
 
     @Synchronized
     fun stage(changes: List<Change>) {
@@ -73,31 +81,120 @@ class LedgerStore private constructor(context: Context) {
         _staged.value = emptyList()
     }
 
+    /**
+     * Commits exactly [rendered] — the changes the user actually saw — and leaves anything
+     * staged afterwards in the queue for a later review.
+     *
+     * Deliberately not "commit the queue": the AppFunctions service can stage from another
+     * thread at any moment, and committing the whole queue would apply changes that appeared
+     * after the screen was drawn and were never displayed.
+     */
     @Synchronized
-    fun commitStaged(): Boolean {
-        val pending = _staged.value
-        if (pending.isEmpty()) return false
-        commit(pending)
-        _staged.value = emptyList()
+    fun applyRendered(rendered: List<Change>): Boolean {
+        if (rendered.isEmpty()) return false
+        val remaining = _staged.value.toMutableList()
+        rendered.forEach { remaining.remove(it) }
+        _staged.value = remaining
+        commit(rendered)
+        return true
+    }
+
+    /** Convenience for the case where the caller really does mean "everything staged". */
+    @Synchronized
+    fun commitStaged(): Boolean = applyRendered(_staged.value)
+
+    // ---------------------------------------------------------------- mutation
+
+    @Synchronized
+    fun commit(changes: List<Change>): Ledger {
+        if (changes.isEmpty()) return _ledger.value
+        val before = _ledger.value
+
+        // Re-validate against the ledger as it is *now*, not as it was when the model saw it.
+        // A staged delete for an expense that is already gone is a no-op that would otherwise
+        // push an undo point and make Undo appear to work when it does nothing.
+        val valid = changes.filter { change ->
+            when (change) {
+                is Change.Add -> true
+                is Change.Update -> before.expenses.any { it.id == change.expense.id }
+                is Change.Delete -> before.expenses.any { it.id == change.expense.id }
+            }
+        }
+        if (valid.isEmpty()) return before
+
+        val after = before.applyingAll(valid)
+        if (after == before) return before
+
+        undoStack.addLast(before)
+        while (undoStack.size > MAX_UNDO) undoStack.removeFirst()
+        persist(after)
+        _ledger.value = after
+        return after
+    }
+
+    @Synchronized
+    fun undo(): Boolean {
+        val previous = undoStack.removeLastOrNull() ?: return false
+        persist(previous)
+        _ledger.value = previous
         return true
     }
 
     @Synchronized
     fun reset(ledger: Ledger) {
-        undoStack.clear()
-        write(ledger)
+        val before = _ledger.value
+        if (before != ledger) {
+            undoStack.addLast(before)
+            while (undoStack.size > MAX_UNDO) undoStack.removeFirst()
+        }
+        _staged.value = emptyList()
+        persist(ledger)
         _ledger.value = ledger
     }
 
-    private fun read(): Ledger = runCatching {
-        if (file.exists()) json.decodeFromString<Ledger>(file.readText()) else Ledger()
-    }.getOrElse { Ledger() }
+    // ---------------------------------------------------------------- persistence
 
-    private fun write(ledger: Ledger) {
-        runCatching { file.writeText(json.encodeToString(ledger)) }
+    private fun read(): Loaded {
+        for (candidate in listOf(file, backup)) {
+            if (!candidate.exists()) continue
+            val text = runCatching { candidate.readText() }.getOrNull() ?: continue
+            val parsed = runCatching { json.decodeFromString<PersistedState>(text) }.getOrNull()
+            if (parsed != null) {
+                return Loaded(parsed.ledger, parsed.undo.takeLast(MAX_UNDO), null)
+            }
+        }
+        return Loaded(
+            ledger = Ledger(),
+            undo = emptyList(),
+            error = if (file.exists() || backup.exists()) {
+                "The saved ledger could not be read. The file has been left on disk untouched."
+            } else {
+                null
+            },
+        )
+    }
+
+    /**
+     * Atomic-ish write: write a temp file, keep the previous document as a backup, then
+     * rename over the original. A kill mid-write can no longer truncate the ledger, and a
+     * failure is reported instead of silently discarding every expense.
+     */
+    private fun persist(ledger: Ledger) {
+        val payload = json.encodeToString(PersistedState(ledger, undoStack.toList()))
+        val result = runCatching {
+            tmp.writeText(payload)
+            if (file.exists()) file.copyTo(backup, overwrite = true)
+            if (!tmp.renameTo(file)) {
+                file.writeText(payload)
+                tmp.delete()
+            }
+        }
+        _storageError.value = result.exceptionOrNull()?.let { "Could not save the ledger: ${it.message}" }
     }
 
     companion object {
+        private const val MAX_UNDO = 20
+
         @Volatile
         private var instance: LedgerStore? = null
 

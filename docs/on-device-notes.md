@@ -202,3 +202,48 @@ The tempting shape is `add_expense(...)` that writes. Resist it: that hands the 
 a commit path your own UI never got. Here every AppFunction only *stages* into the shared
 queue, so the AppFunctions surface is exactly as untrusted as the in-app model — Gemini can
 propose, only the human can apply.
+
+## 8. Driving AppFunctions from adb: the quoting trap
+
+`cmd app_function execute-app-function` takes parameters as **plain JSON scalars**, one per
+parameter — `{"id":"abc"}`, not `{"id":{"value":"abc"}}`. Object-wrapping is rejected:
+
+```
+Parameter id should be the type of AppFunctionStringTypeMetadata(isNullable=false, ...) (code 1001)
+```
+
+But the failure that actually wastes an afternoon looks like a *type* problem and is not:
+
+```
+org.json.JSONException: Value description of type java.lang.String cannot be converted to JSONObject
+```
+
+That is **adb shell splitting your JSON on the commas.** `adb shell "..."` runs the payload
+through the device shell, so an unescaped `'{"a":"b","c":8400}'` arrives as seven separate
+argv fragments and the service receives only the first one.
+
+The tell — and the reason this fools people — is that a **single-key** object works. With
+one key there are no commas to split, and `org.json`'s lenient parser turns the mangled
+`{id:abc}` back into `{"id":"abc"}`. So it looks like "strings work, numbers don't", and you
+go hunting for a numeric-parameter bug that does not exist.
+
+The working form, verified on a Pixel 11 Pro / API 37:
+
+```bash
+adb -s "$DEVICE" shell "cmd app_function execute-app-function \
+  --package com.ebowwa.tab \
+  --function 'com.ebowwa.tab.appfunctions.TabAppFunctions#add_expense' \
+  --parameters '{\"description\":\"Dinner\",\"amountCents\":8400,\"paidBy\":\"You\",\"participants\":[\"You\",\"Ana\",\"Ben\"]}'"
+```
+
+Outer double quotes, single-quoted `--function` and `--parameters`, and `\"` for every quote
+inside the JSON. Rules worth knowing once it works:
+
+- `Long` needs a JSON integer: `8400`. `"8400"` and `8400.0` are rejected.
+- `Double` needs a real float: `12.5`. The integer `12` is rejected.
+- `List<String>` is lenient — a bare `"You"` is accepted.
+- Unknown keys are silently ignored.
+
+The general lesson outranks the specifics: before concluding "the platform is broken", print
+the argv the device actually received. Every failed diagnostic in this file started with
+trusting a tool's *reported* behaviour instead of its inputs.

@@ -13,6 +13,7 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * One inference: the text plus what it cost.
@@ -69,21 +70,22 @@ class NanoEngine(private val model: GenerativeModel) : PlanEngine {
         val promptTokens = runCatching { model.countTokens(request).totalTokens }.getOrDefault(-1)
 
         val startedAt = SystemClock.elapsedRealtime()
-        var firstTokenAt = -1L
+        // The callback fires on another thread; plain vars here were a data race.
+        val firstTokenAt = AtomicLong(-1L)
         val streamed = StringBuilder()
 
         // Stream so we can separate prefill from decode: the first callback is TTFT.
         val callback = object : StreamingCallback {
             override fun onNewText(text: String) {
-                if (firstTokenAt < 0L) firstTokenAt = SystemClock.elapsedRealtime()
-                streamed.append(text)
+                firstTokenAt.compareAndSet(-1L, SystemClock.elapsedRealtime())
+                synchronized(streamed) { streamed.append(text) }
             }
         }
 
         val response = model.generateContent(request, callback)
         val totalMs = SystemClock.elapsedRealtime() - startedAt
 
-        val text = streamed.toString().ifEmpty {
+        val text = synchronized(streamed) { streamed.toString() }.ifEmpty {
             response.candidates.firstOrNull()?.text.orEmpty()
         }
 
@@ -100,7 +102,7 @@ class NanoEngine(private val model: GenerativeModel) : PlanEngine {
             promptTokens = promptTokens,
             outputTokens = outputTokens,
             totalTokens = if (promptTokens >= 0 && outputTokens >= 0) promptTokens + outputTokens else -1,
-            ttftMs = if (firstTokenAt >= 0L) firstTokenAt - startedAt else -1L,
+            ttftMs = firstTokenAt.get().takeIf { it >= 0L }?.minus(startedAt) ?: -1L,
             totalMs = totalMs,
         )
     }

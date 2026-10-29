@@ -15,11 +15,13 @@ import com.ebowwa.tab.core.data.LedgerStore
 import com.ebowwa.tab.core.model.Change
 import com.ebowwa.tab.core.model.Expense
 import com.ebowwa.tab.core.model.Ledger
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class UiState(
     val ledger: Ledger = Ledger(),
@@ -196,16 +198,23 @@ class TabViewModel(private val appContext: Context) : ViewModel() {
     }
 
     fun applyPending() {
-        if (_state.value.pending.isEmpty()) return
-        store.commitStaged()
-        _state.update {
-            it.copy(
-                pending = emptyList(),
-                pendingReply = "",
-                pendingNotes = emptyList(),
-                canUndo = store.canUndo,
-                lastRaw = "",
-            )
+        // Commit the list the user actually saw. Committing the whole queue would apply
+        // anything staged (e.g. by the system agent) after this screen was drawn.
+        val rendered = _state.value.pending
+        if (rendered.isEmpty()) return
+        viewModelScope.launch {
+            // commit() writes to disk while holding the store monitor; doing that on the
+            // main thread ANR'd the app on a real device.
+            val ok = withContext(Dispatchers.IO) { store.applyRendered(rendered) }
+            if (!ok) return@launch
+            _state.update {
+                it.copy(
+                    pendingReply = "",
+                    pendingNotes = emptyList(),
+                    canUndo = store.canUndo,
+                    lastRaw = "",
+                )
+            }
         }
     }
 
@@ -217,8 +226,10 @@ class TabViewModel(private val appContext: Context) : ViewModel() {
     }
 
     fun undo() {
-        store.undo()
-        _state.update { it.copy(canUndo = store.canUndo) }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { store.undo() }
+            _state.update { it.copy(canUndo = store.canUndo) }
+        }
     }
 
     fun dismissError() {
@@ -226,6 +237,12 @@ class TabViewModel(private val appContext: Context) : ViewModel() {
     }
 
     fun seedDemoData() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { seedDemoDataBlocking() }
+        }
+    }
+
+    private fun seedDemoDataBlocking() {
         store.reset(
             Ledger(
                 expenses = listOf(

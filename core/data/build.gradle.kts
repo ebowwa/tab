@@ -1,5 +1,7 @@
 plugins {
     alias(libs.plugins.android.library)
+    // Required: LedgerStore persists a @Serializable document of its own.
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {

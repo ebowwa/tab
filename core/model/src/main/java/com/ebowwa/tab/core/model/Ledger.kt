@@ -28,17 +28,28 @@ sealed interface Change {
     val label: String
 
     data class Add(val expense: Expense) : Change {
-        override val label: String get() = "Add ${expense.description} — ${expense.amountCents.money()}"
+        override val label: String get() = describe("Add", expense)
     }
 
     data class Update(val expense: Expense) : Change {
-        override val label: String get() = "Update ${expense.description} — ${expense.amountCents.money()}"
+        override val label: String get() = describe("Update", expense)
     }
 
     data class Delete(val expense: Expense) : Change {
-        override val label: String get() = "Delete ${expense.description}"
+        override val label: String get() = describe("Delete", expense)
     }
+
+
 }
+
+/**
+ * The approval preview has to show what will actually change. An earlier version showed only
+ * "Add Dinner — $84.00", which hid the payer and the split — the two fields most likely to
+ * be wrong.
+ */
+private fun describe(verb: String, e: Expense): String =
+    "$verb ${e.description} — ${e.amountCents.money()} · ${e.paidBy} paid · " +
+        "split ${e.participants.joinToString(", ")}"
 
 /** Apply one change to a ledger, returning the new ledger. */
 fun Ledger.applying(change: Change): Ledger = when (change) {
@@ -56,15 +67,19 @@ fun Ledger.applyingAll(changes: List<Change>): Ledger = changes.fold(this) { acc
 fun Ledger.balances(): Map<String, Long> {
     val net = members.associateWith { 0L }.toMutableMap()
     for (e in expenses) {
-        val parts = e.participants.ifEmpty { listOf(e.paidBy) }
+        // Dedupe here, not at the call sites: a duplicated participant must not be charged twice.
+        val parts = e.participants.ifEmpty { listOf(e.paidBy) }.distinct()
         net[e.paidBy] = (net[e.paidBy] ?: 0L) + e.amountCents
         val base = e.amountCents / parts.size
         var remainder = e.amountCents - base * parts.size
+        // Distribute by sign. With a negative amount, truncating division leaves a negative
+        // remainder, and a `> 0` test would silently drop it and break the zero-sum invariant.
+        val step = if (remainder >= 0) 1L else -1L
         for (p in parts) {
             var share = base
-            if (remainder > 0) {
-                share += 1
-                remainder -= 1
+            if (remainder != 0L) {
+                share += step
+                remainder -= step
             }
             net[p] = (net[p] ?: 0L) - share
         }

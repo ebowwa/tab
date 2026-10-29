@@ -4,8 +4,8 @@ A group-expense ledger whose agent **never writes to your data directly**.
 
 Ask it something in plain language. It returns a *plan*. The plan is validated, shown to
 you as a list of proposed changes, and nothing is committed until you press Apply. Every
-commit snapshots the previous ledger, so one tap of Undo puts everything back exactly as
-it was.
+commit snapshots the previous ledger — on disk, alongside the ledger itself — so Undo still
+works after the process has been killed.
 
 The point isn't the ledger. It's the pattern: an LLM agent that can act on real data
 without being trusted with it.
@@ -17,8 +17,10 @@ without being trusted with it.
 2. **Every action is validated against real state.** A payer who isn't a member, an
    expense id that doesn't exist, a non-positive amount: each is rejected with a visible
    note instead of being applied. See `PlanParser`.
-3. **Writes are transactional and reversible.** A plan applies as one batch, and the whole
-   batch can be undone as one step. See `LedgerStore`.
+3. **Writes are transactional and reversible — including across a restart.** A plan applies
+   as one batch, and the whole batch can be undone as one step. The undo history is
+   persisted *with* the ledger, because keeping it in memory meant a commit survived process
+   death while its undo snapshot did not. See `LedgerStore`.
 
 ## Architecture
 
