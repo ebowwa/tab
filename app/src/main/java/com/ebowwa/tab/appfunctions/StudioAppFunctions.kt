@@ -2,6 +2,7 @@ package com.ebowwa.tab.appfunctions
 
 import android.content.Intent
 import androidx.appfunctions.AppFunctionDeclaration
+import com.ebowwa.tab.core.agent.HtmlValidator
 import androidx.appfunctions.AppFunctionService
 import androidx.appfunctions.AppFunctionServiceEntryPoint
 import com.ebowwa.tab.MainActivity
@@ -61,6 +62,41 @@ abstract class StudioAppFunctions : AppFunctionService() {
     }
 
     /**
+     * Installs a complete game that the assistant wrote. Studio validates it and renders it;
+     * it does not generate anything itself.
+     *
+     * Use this when you can write the HTML yourself - it is far better than asking the phone's
+     * small on-device model to write it. The document must be self-contained: inline CSS and
+     * JavaScript, no external resources, one canvas.
+     *
+     * @param html The complete HTML document for the game.
+     * @return Whether it was installed, or exactly why it was refused.
+     */
+    @AppFunctionDeclaration(isDescribedByKDoc = true)
+    suspend fun install_game(html: String): String {
+        if (html.isBlank()) return "Refused: the html parameter was empty."
+
+        val verdict = HtmlValidator.validate(html)
+        val page = verdict.html
+            ?: return "Refused: ${verdict.reason}"
+
+        StudioRequests.queueHtml(page)
+        val opened = runCatching {
+            startActivity(
+                Intent(this, MainActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                },
+            )
+        }.isSuccess
+
+        return if (opened) {
+            "Installed (${page.length} chars) and opened Studio."
+        } else {
+            "Installed (${page.length} chars). Open Studio to play it."
+        }
+    }
+
+    /**
      * Reports what Studio can do and whether the on-device model is usable right now.
      *
      * @return A short description of Studio's capability and its model status.
@@ -69,9 +105,10 @@ abstract class StudioAppFunctions : AppFunctionService() {
     suspend fun studio_status(): String {
         val queued = StudioRequests.peek()
         return buildString {
-            append("Studio builds self-contained HTML games on-device with Gemini Nano. ")
-            append("No network, no server, no API key. ")
-            append("Call build_game with a description to make one. ")
+            append("Studio runs self-contained HTML games. Two ways in: ")
+            append("install_game(html) if you write the document yourself - preferred, since you ")
+            append("are a much stronger model than the phone's on-device one; or build_game(prompt) ")
+            append("to have Gemini Nano write it on the device with no network. ")
             if (queued != null) append("A build is already queued: \"$queued\".")
         }
     }

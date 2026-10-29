@@ -199,6 +199,17 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
         return "${r.outputTokens} tok | ${r.totalMs} ms | $tok tok/s"
     }
 
+    /** A finished game handed over by the system agent: validate, then show it. */
+    fun install(html: String) {
+        val verdict = HtmlValidator.validate(html)
+        val page = verdict.html
+        if (page == null) {
+            _state.update { it.copy(error = verdict.reason) }
+            return
+        }
+        accept(page, "from Gemini")
+    }
+
     /** Reported by the WebView when the generated page throws. */
     fun onRuntimeError(message: String) {
         android.util.Log.w("Tab", "webview error: $message")
