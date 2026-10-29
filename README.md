@@ -23,17 +23,17 @@ without being trusted with it.
 ## Architecture
 
 ```
-:app                  thin — window + launch intent, hands off to the feature
+:app                  thin — window, launch intent, and the AppFunctions service
 :feature:ledger       Compose UI, view model, the confirm/apply/undo surface
 :core:agent           engines, prompt, plan parsing, metrics
-:core:data            persistence + undo stack
+:core:data            persistence, undo stack, and the shared staging queue
 :core:model           pure data + balance math, no Android, no I/O
 ```
 
 The dependency rule is one-directional: `app → feature → core`, and `core:agent` and
 `core:data` both depend on `core:model`, which depends on nothing.
 
-Two deliberate seams:
+Three deliberate seams:
 
 - **`PlanEngine`** is an interface. `NanoEngine` runs Gemini Nano through ML Kit GenAI on
   the device; `GeminiRestEngine` calls the Gemini Developer API. Same system instruction,
@@ -41,6 +41,9 @@ Two deliberate seams:
 - **ML Kit is an implementation detail of `:core:agent`.** It is declared `implementation`,
   not `api`, and its download states are remapped to `ModelDownload` so no module above it
   ever imports an ML Kit type.
+- **One staging queue, two agents.** `LedgerStore.staged` is shared: the in-app agent and
+  the system Gemini (via AppFunctions) both write there, and neither can commit. Only the
+  UI's Apply drains it.
 
 ## On-device model support
 
@@ -108,15 +111,15 @@ throughput; this app streams specifically so the two phases can be separated. Se
 
 ## Status
 
-Working: on-device inference, plan validation, staged apply, undo, metrics, cloud fallback.
+Working: on-device inference, plan validation, staged apply, undo, metrics, cloud fallback,
+and **AppFunctions** — the system Gemini agent can list balances and propose expenses, and
+its proposals land in the same staging queue the user approves.
 
 Not yet done:
 
-- **AppFunctions** — exposing these same operations to the system Gemini agent so it can
-  drive the app, not just the in-app agent. The tool surface is already the right shape
-  for it (few, outcome-sized, writes behind confirmation).
 - Function calling via `FunctionDeclaration` instead of the constrained-JSON contract.
   `Feature.FUNCTION_CALLING` is available on nano-v4 hardware.
+- Letting Gemini commit directly. Deliberately not planned: that would break the thesis.
 
 ## License
 

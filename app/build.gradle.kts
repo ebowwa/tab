@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.ksp)
 }
 
 android {
@@ -29,6 +30,12 @@ android {
 
 dependencies {
     implementation(project(":feature:ledger"))
+    implementation(project(":core:model"))
+    implementation(project(":core:data"))
+
+    // AppFunctions: the compiler is a KSP processor, never a runtime dependency.
+    implementation(libs.androidx.appfunctions)
+    ksp(libs.androidx.appfunctions.compiler)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)

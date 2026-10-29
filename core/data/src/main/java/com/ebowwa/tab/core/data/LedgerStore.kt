@@ -19,7 +19,7 @@ import java.io.File
  * undo stack first. That is the whole safety story: an agent can propose a batch of
  * changes, the user approves it, and one tap puts the ledger back exactly as it was.
  */
-class LedgerStore(context: Context) {
+class LedgerStore private constructor(context: Context) {
 
     private val file = File(context.applicationContext.filesDir, "ledger.json")
     private val json = Json {
@@ -31,6 +31,13 @@ class LedgerStore(context: Context) {
     val ledger: StateFlow<Ledger> = _ledger.asStateFlow()
 
     private val undoStack = ArrayDeque<Ledger>()
+
+    /**
+     * Proposed-but-uncommitted changes. Shared by every surface: the in-app agent and the
+     * AppFunctions service both stage here, and only the UI's Apply commits them.
+     */
+    private val _staged = MutableStateFlow<List<Change>>(emptyList())
+    val staged: StateFlow<List<Change>> = _staged.asStateFlow()
 
     val canUndo: Boolean
         @Synchronized get() = undoStack.isNotEmpty()
@@ -56,6 +63,26 @@ class LedgerStore(context: Context) {
     }
 
     @Synchronized
+    fun stage(changes: List<Change>) {
+        if (changes.isEmpty()) return
+        _staged.value = _staged.value + changes
+    }
+
+    @Synchronized
+    fun clearStaged() {
+        _staged.value = emptyList()
+    }
+
+    @Synchronized
+    fun commitStaged(): Boolean {
+        val pending = _staged.value
+        if (pending.isEmpty()) return false
+        commit(pending)
+        _staged.value = emptyList()
+        return true
+    }
+
+    @Synchronized
     fun reset(ledger: Ledger) {
         undoStack.clear()
         write(ledger)
@@ -68,5 +95,19 @@ class LedgerStore(context: Context) {
 
     private fun write(ledger: Ledger) {
         runCatching { file.writeText(json.encodeToString(ledger)) }
+    }
+
+    companion object {
+        @Volatile
+        private var instance: LedgerStore? = null
+
+        /**
+         * One store per process. The AppFunctions service and the Activity must see the
+         * same ledger and the same staging queue, or Gemini's proposals vanish.
+         */
+        fun get(context: Context): LedgerStore =
+            instance ?: synchronized(this) {
+                instance ?: LedgerStore(context.applicationContext).also { instance = it }
+            }
     }
 }

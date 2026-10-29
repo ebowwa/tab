@@ -9,6 +9,8 @@ serialization = "1.12.0"
 coroutines = "1.11.0"
 mlkitGenai = "1.0.0-beta5"
 mlkitSchema = "1.0.0-alpha2"
+ksp = "2.3.12"
+appfunctions = "1.0.0-beta01"
 junit = "4.13.2"
 
 [libraries]
@@ -29,6 +31,9 @@ kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutine
 mlkit-genai-prompt = { module = "com.google.mlkit:genai-prompt", version.ref = "mlkitGenai" }
 mlkit-genai-schema = { module = "com.google.mlkit:genai-schema", version.ref = "mlkitSchema" }
 
+androidx-appfunctions = { module = "androidx.appfunctions:appfunctions", version.ref = "appfunctions" }
+androidx-appfunctions-compiler = { module = "androidx.appfunctions:appfunctions-compiler", version.ref = "appfunctions" }
+
 junit = { module = "junit:junit", version.ref = "junit" }
 
 [plugins]
@@ -36,3 +41,4 @@ android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

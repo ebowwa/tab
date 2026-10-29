@@ -141,3 +141,48 @@ Observed on a Pixel 11 Pro, `nano-v4-full`, 437-token prompt, 61-token JSON answ
 ```
 promptTokens=437 outputTokens=61 ttftMs=226 totalMs=756 tokPerSec=115.1
 ```
+
+## 7. AppFunctions: what the KSP processor generates
+
+`androidx.appfunctions:appfunctions:1.0.0-beta01` plus `appfunctions-compiler` as a **KSP**
+processor. With AGP 9's built-in Kotlin there is no `org.jetbrains.kotlin.android` plugin to
+apply, and KSP's old `<kotlin>-<ksp>` version scheme no longer applies — **KSP 2.3.12** is
+what works (KSP ≥ 2.3.1 is the floor for AGP 9 built-in Kotlin).
+
+You hand-write only three things:
+
+1. an **abstract** class extending `androidx.appfunctions.AppFunctionService`, annotated
+   `@AppFunctionServiceEntryPoint(serviceName = ..., appFunctionXmlFileName = ...)`, with
+   `@AppFunctionDeclaration(isDescribedByKDoc = true)` on each function. Do **not** implement
+   `onExecuteFunction` — the processor rejects that.
+2. the `<service>` entry in the manifest.
+3. the Gradle wiring (`implementation` for the runtime, `ksp(...)` for the compiler — never
+   `implementation` for the compiler).
+
+The processor generates the concrete service, the inventory, and the metadata XML, and
+packages that XML into `assets/` automatically. Function ids are
+`<fully.qualified.ClassName>#<methodName>`. Your KDoc becomes the function description that
+the agent reads — so the KDoc *is* the prompt.
+
+Signatures accept `Int/Long/Float/Double/Boolean/String/Unit`, the primitive arrays,
+`ByteArray`, `java.time.*`, `android.net.Uri`, `List<String>`, and any
+`@AppFunctionSerializable` class. Nullable parameters are rejected at compile time, as is
+`List<Int>` (only `List<String>`).
+
+Two traps:
+
+- **No constructor injection.** The generated subclass calls `: Base()`, so the base needs a
+  no-arg constructor — reach dependencies lazily through `applicationContext`.
+- **The service runs on `Dispatchers.Main`**, so wrap disk/database work in
+  `withContext(Dispatchers.IO)`.
+
+Because the service and the Activity are separate components, give the data layer a
+process-wide singleton — otherwise a write made through AppFunctions is invisible to the
+running UI.
+
+### Writes should stage, not commit
+
+The tempting shape is `add_expense(...)` that writes. Resist it: that hands the system agent
+a commit path your own UI never got. Here every AppFunction only *stages* into the shared
+queue, so the AppFunctions surface is exactly as untrusted as the in-app model — Gemini can
+propose, only the human can apply.

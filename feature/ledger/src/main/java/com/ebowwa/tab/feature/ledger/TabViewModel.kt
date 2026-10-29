@@ -39,7 +39,7 @@ data class UiState(
 
 class TabViewModel(private val appContext: Context) : ViewModel() {
 
-    private val store = LedgerStore(appContext)
+    private val store = LedgerStore.get(appContext)
     private val agent = TabAgent(appContext, store)
     private val prefs = appContext.getSharedPreferences("tab_prefs", Context.MODE_PRIVATE)
 
@@ -52,6 +52,13 @@ class TabViewModel(private val appContext: Context) : ViewModel() {
         viewModelScope.launch {
             store.ledger.collect { ledger ->
                 _state.update { it.copy(ledger = ledger, canUndo = store.canUndo) }
+            }
+        }
+        // Staged changes can arrive from either surface: this agent, or the AppFunctions
+        // service when the system Gemini proposes something.
+        viewModelScope.launch {
+            store.staged.collect { staged ->
+                _state.update { it.copy(pending = staged) }
             }
         }
         viewModelScope.launch { refreshModel() }
@@ -175,10 +182,10 @@ class TabViewModel(private val appContext: Context) : ViewModel() {
                 "outcome reply=${outcome.reply} changes=${outcome.changes.size} " +
                     "notes=${outcome.notes} error=${outcome.error} raw=${outcome.raw}",
             )
+            store.stage(outcome.changes)
             _state.update {
                 it.copy(
                     busy = false,
-                    pending = outcome.changes,
                     pendingReply = outcome.reply,
                     pendingNotes = outcome.notes,
                     error = outcome.error,
@@ -189,9 +196,8 @@ class TabViewModel(private val appContext: Context) : ViewModel() {
     }
 
     fun applyPending() {
-        val pending = _state.value.pending
-        if (pending.isEmpty()) return
-        store.commit(pending)
+        if (_state.value.pending.isEmpty()) return
+        store.commitStaged()
         _state.update {
             it.copy(
                 pending = emptyList(),
@@ -204,8 +210,9 @@ class TabViewModel(private val appContext: Context) : ViewModel() {
     }
 
     fun discardPending() {
+        store.clearStaged()
         _state.update {
-            it.copy(pending = emptyList(), pendingReply = "", pendingNotes = emptyList(), lastRaw = "")
+            it.copy(pendingReply = "", pendingNotes = emptyList(), lastRaw = "")
         }
     }
 
