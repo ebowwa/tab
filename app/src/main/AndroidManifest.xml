@@ -32,6 +32,13 @@
                 <action android:name="android.app.appfunctions.AppFunctionService" />
             </intent-filter>
         </service>
+        <receiver
+            android:name=".appfunctions.InstallReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.ebowwa.tab.INSTALL_GAME" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>
