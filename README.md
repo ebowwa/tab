@@ -111,17 +111,43 @@ Dividing output tokens by total wall-clock folds prefill into the rate and under
 throughput; this app streams specifically so the two phases can be separated. See
 `tools/bench.sh` to run a suite and aggregate.
 
+## Letting Gemini drive it
+
+Studio also registers **AppFunctions**, so the system Gemini agent can drive it:
+
+```
+@Studio build me a snake game you steer by tapping left or right
+→ build_game("a snake game you steer by tapping left or right")
+```
+
+Verified through the platform on a Pixel 11 Pro:
+
+```
+$ adb shell "cmd app_function execute-app-function --package com.ebowwa.tab \
+    --function 'com.ebowwa.tab.appfunctions.StudioAppFunctions#build_game' \
+    --parameters '{\"prompt\":\"a snake game you steer by tapping left or right\"}'"
+"Opening Studio to build \"a snake game...\". It generates on-device with Gemini Nano."
+```
+
+One constraint shapes this design: **ML Kit GenAI is foreground-only** (see
+[docs/on-device-notes.md](docs/on-device-notes.md) §3), and AppFunctions run in a service,
+so a function cannot generate. `build_game` therefore queues the prompt and the Activity
+consumes it on next open. Background activity starts are also blocked, so the reliable path
+is: Gemini queues it, you tap Studio, and it is already building.
+
 ## Status
 
-Working: on-device inference, plan validation, staged apply, undo, metrics, cloud fallback,
-and **AppFunctions** — the system Gemini agent can list balances and propose expenses, and
-its proposals land in the same staging queue the user approves.
+Working: on-device HTML game generation with validation, WebView sandboxing, undo across
+generations, live tok/s metrics, and **AppFunctions** so the system Gemini agent can ask
+Studio to build something.
 
 Not yet done:
 
-- Function calling via `FunctionDeclaration` instead of the constrained-JSON contract.
-  `Feature.FUNCTION_CALLING` is available on nano-v4 hardware.
-- Letting Gemini commit directly. Deliberately not planned: that would break the thesis.
+- Single-shot generation: a broken game needs a re-prompt, not a repair loop.
+- The `core:data` / ledger modules are now unused by the feature surface and should be
+  removed or repurposed.
+- The ledger's staged-apply machinery still exists and is the better shape for any future
+  surface that mutates stored data; the studio surface does not need it.
 
 ## License
 
