@@ -101,13 +101,19 @@ class StudioAgent {
     companion object {
         internal val DESIGN_INSTRUCTION = """
             You design a tiny arcade game. Answer with ONE JSON object and nothing else.
-            No markdown, no code, no explanation.
 
-            {"title":"<max 3 words>","objectName":"<what falls>","background":"#rrggbb",
-             "accent":"#rrggbb","speed":<1-6>,"spawnRate":<20-120>,"playerWidth":<50-160>}
+            {"kind":"catcher|dodger|shooter|whack","title":"<max 3 words>",
+             "objectName":"<what falls or is hit>","background":"#rrggbb","accent":"#rrggbb",
+             "speed":<1-6>,"spawnRate":<20-120>,"playerWidth":<50-160>}
+
+            Pick the kind that fits the request best:
+            - catcher: move a paddle to CATCH falling things
+            - dodger: move to AVOID falling things
+            - shooter: tap to SHOOT descending things
+            - whack: TAP things that appear and vanish
 
             Pick colours that suit the mood. Higher speed and lower spawnRate means harder.
-            Match the request: if it mentions a theme, name the object and colours for it.
+            Match the theme in the objectName and colours.
         """.trimIndent()
 
         internal val SYSTEM_INSTRUCTION = """
