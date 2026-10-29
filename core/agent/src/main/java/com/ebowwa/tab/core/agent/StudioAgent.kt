@@ -147,13 +147,22 @@ object HtmlValidator {
             return Verdict(null, "Rejected: generated markup uses \"$hit\", which reaches outside the page.")
         }
 
+        // Detect the premature-</script> failure precisely: strip script/style blocks AND
+        // tags, then look for real code constructs in what is left. Matching the bare word
+        // "function " rejected valid games whose text happened to contain it.
         val withoutCode = cleaned
-            .replace(Regex("<script[^>]*>.*?</script>", RegexOption.DOT_MATCHES_ALL), "")
-            .replace(Regex("<style[^>]*>.*?</style>", RegexOption.DOT_MATCHES_ALL), "")
-        val stray = listOf("function ", "requestAnimationFrame", "ctx.", "addEventListener")
-            .firstOrNull { withoutCode.contains(it) }
-        if (stray != null) {
-            return Verdict(null, "Rejected: code leaked outside a <script> tag (\"$stray\"), so it never runs.")
+            .replace(Regex("<script[^>]*>.*?</script>", RegexOption.DOT_MATCHES_ALL), " ")
+            .replace(Regex("<style[^>]*>.*?</style>", RegexOption.DOT_MATCHES_ALL), " ")
+            .replace(Regex("<[^>]*>"), " ")
+        val leaked = Regex("""function\s+[A-Za-z_$][\w$]*\s*\(""").containsMatchIn(withoutCode) ||
+            withoutCode.contains("requestAnimationFrame(") ||
+            withoutCode.contains("addEventListener(") ||
+            Regex("""\bctx\.[a-zA-Z]+\(""").containsMatchIn(withoutCode)
+        if (leaked) {
+            return Verdict(
+                null,
+                "Rejected: code leaked outside a <script> tag, so it never runs.",
+            )
         }
 
         if (!cleaned.contains("</html>", ignoreCase = true)) {
