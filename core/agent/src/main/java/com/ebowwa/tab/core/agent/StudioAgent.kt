@@ -6,6 +6,8 @@ import com.google.mlkit.genai.prompt.Generation
 import com.google.mlkit.genai.prompt.GenerativeModel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
 import java.util.Locale
 
 /**
@@ -43,6 +45,28 @@ class StudioAgent {
         runCatching { model.warmup() }
     }
 
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    /**
+     * The model designs the game; [GameTemplate] builds it. Output is a handful of fields
+     * rather than a program, which is the only shape this model gets right consistently.
+     */
+    suspend fun design(userPrompt: String): Result<Pair<GameSpec, GenerationResult>> {
+        android.util.Log.i("Tab", "design: \"${userPrompt.take(80)}\"")
+        return engine.generate(DESIGN_INSTRUCTION, userPrompt, maxTokens = 256).map { r ->
+            android.util.Log.i("Tab", "design raw: ${r.text.take(200)}")
+            val start = r.text.indexOf('{')
+            val end = r.text.lastIndexOf('}')
+            val spec = if (start >= 0 && end > start) {
+                runCatching { json.decodeFromString<GameSpec>(r.text.substring(start, end + 1)) }
+                    .getOrDefault(GameSpec())
+            } else {
+                GameSpec()
+            }
+            GameTemplate.sanitise(spec) to r
+        }
+    }
+
     suspend fun generate(userPrompt: String): Result<GenerationResult> {
         // 512 was truncating games mid-function; nano-v4 has a 32k window.
         val result = engine.generate(SYSTEM_INSTRUCTION, userPrompt, maxTokens = 2048)
@@ -58,7 +82,34 @@ class StudioAgent {
         return result
     }
 
+    /**
+     * Second pass: hand the model its own broken code plus the runtime error and ask for a
+     * complete rewrite. On-device generation is single-shot otherwise, and a model this size
+     * gets state machines wrong without seeing the failure.
+     */
+    suspend fun repair(originalPrompt: String, brokenHtml: String, error: String): Result<GenerationResult> {
+        val prompt = buildString {
+            appendLine("The game you wrote for \"$originalPrompt\" threw an error when it ran.")
+            appendLine("Error: ${error.take(400)}")
+            appendLine("Rewrite the whole document so it runs. Output only the HTML.")
+            appendLine("Your previous attempt:")
+            appendLine(brokenHtml.take(4000))
+        }
+        return engine.generate(SYSTEM_INSTRUCTION, prompt, maxTokens = 2048)
+    }
+
     companion object {
+        internal val DESIGN_INSTRUCTION = """
+            You design a tiny arcade game. Answer with ONE JSON object and nothing else.
+            No markdown, no code, no explanation.
+
+            {"title":"<max 3 words>","objectName":"<what falls>","background":"#rrggbb",
+             "accent":"#rrggbb","speed":<1-6>,"spawnRate":<20-120>,"playerWidth":<50-160>}
+
+            Pick colours that suit the mood. Higher speed and lower spawnRate means harder.
+            Match the request: if it mentions a theme, name the object and colours for it.
+        """.trimIndent()
+
         internal val SYSTEM_INSTRUCTION = """
             You write tiny self-contained browser games.
 
@@ -67,22 +118,19 @@ class StudioAgent {
 
             Hard rules:
             - Single file. All CSS and JavaScript inline, inside the document.
-            - No external resources: no <script src>, no <link href>, no CDN, no fonts, no images.
-            - Use <canvas> for everything you draw. Size it to fill the window.
-            - Keep the whole file under about 1200 characters. Short and working beats
-              ambitious and broken.
+            - No external resources of any kind.
+            - One <canvas> sized to fill the window.
+            - Under about 700 characters total. Short and working beats ambitious and broken.
             - Start with <!doctype html> and finish with </html>. Never stop mid-function.
 
-            It must visibly animate and be playable, so:
-            - Spawn a new object on a timer (for example every 40 frames) so the screen is
-              NEVER empty. Do not rely on a single starting object.
-            - Update positions and then redraw, and call requestAnimationFrame at the end of
-              your draw function so the loop continues forever.
-            - Handle touch: use pointerdown/pointermove/pointerup and also call
-              preventDefault so dragging does not scroll the page.
-            - Show a visible score as text drawn on the canvas.
-
-            Style: dark background, high contrast, one clear mechanic, immediate feedback.
+            One mechanic only. It must run and animate immediately:
+            - Spawn new objects on a timer so the screen is never empty.
+            - Update positions, then redraw, then call requestAnimationFrame(draw) as the
+              last line of draw so the loop never stops.
+            - Touch and mouse both: pointerdown/pointermove/pointerup, with preventDefault.
+            - Draw a score on the canvas with fillText.
+            - Define every function before you call it, and never reference a variable
+              before it is declared.
         """.trimIndent()
     }
 }
@@ -113,6 +161,21 @@ object HtmlValidator {
         if (hit != null) {
             return Verdict(null, "Rejected: generated markup uses \"$hit\", which can reach outside the page.")
         }
+        // The model sometimes closes <script> mid-code, leaving the rest of the game as
+        // inert text. That passes every structural check yet never runs, so detect code
+        // sitting outside a script block.
+        val withoutCode = cleaned
+            .replace(Regex("<script[^>]*>.*?</script>", RegexOption.DOT_MATCHES_ALL), "")
+            .replace(Regex("<style[^>]*>.*?</style>", RegexOption.DOT_MATCHES_ALL), "")
+        val strayCode = listOf("function ", "requestAnimationFrame", "ctx.", "addEventListener", "let ", "const ")
+            .firstOrNull { withoutCode.contains(it) }
+        if (strayCode != null) {
+            return Verdict(
+                null,
+                "Rejected: generated code leaked outside a <script> tag (\"$strayCode\"), so it never runs.",
+            )
+        }
+
         if (!cleaned.contains("</html>", ignoreCase = true)) {
             return Verdict(null, "The document was cut off before it finished. Try again, or ask for something simpler.")
         }

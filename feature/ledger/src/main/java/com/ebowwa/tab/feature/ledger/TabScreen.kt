@@ -32,6 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -113,7 +114,7 @@ fun TabScreen(vm: StudioViewModel) {
                         modifier = Modifier.align(Alignment.Center),
                     )
                 } else {
-                    GameView(state.html, Modifier.fillMaxSize())
+                    GameView(state.html, onError = vm::onRuntimeError, modifier = Modifier.fillMaxSize())
                 }
             }
 
@@ -160,29 +161,48 @@ fun TabScreen(vm: StudioViewModel) {
 }
 
 @Composable
-private fun GameView(html: String, modifier: Modifier = Modifier) {
+private fun GameView(html: String, onError: (String) -> Unit, modifier: Modifier = Modifier) {
+    val report by rememberUpdatedState(onError)
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
             WebView(ctx).apply {
                 setBackgroundColor(AndroidColor.BLACK)
-                webChromeClient = object : WebChromeClient() {
-                    override fun onConsoleMessage(m: ConsoleMessage): Boolean {
-                        Log.i("Tab", "webview console: ${m.messageLevel()} ${m.message()} @${m.lineNumber()}")
-                        return true
-                    }
-                }
                 settings.javaScriptEnabled = true
                 settings.allowFileAccess = false
                 settings.blockNetworkLoads = true
                 settings.mediaPlaybackRequiresUserGesture = false
+                webChromeClient = object : WebChromeClient() {
+                    override fun onConsoleMessage(m: ConsoleMessage): Boolean {
+                        val text = "${m.message()} @${m.lineNumber()}"
+                        Log.i("Tab", "webview console: ${m.messageLevel()} $text")
+                        if (m.messageLevel() == ConsoleMessage.MessageLevel.ERROR) report(text)
+                        return true
+                    }
+                }
             }
         },
         update = { view ->
             if (view.tag != html) {
                 view.tag = html
-                view.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                view.loadDataWithBaseURL(null, injectErrorHook(html), "text/html", "utf-8", null)
             }
         },
     )
+}
+
+/**
+ * Catch uncaught JS errors so they can be fed back to the model. Injected as the first
+ * script in the document, before the game code runs.
+ */
+private const val ERROR_HOOK =
+    "<script>window.onerror=function(m,s,l){console.error('JS '+m+' line '+l);return false;};</script>"
+
+private fun injectErrorHook(html: String): String {
+    val anchors = listOf("<head>", "<head ", "<body>", "<body ", "<html>", "<html ")
+    val idx = anchors.map { html.indexOf(it, ignoreCase = true) }.filter { it >= 0 }.minOrNull()
+        ?: return ERROR_HOOK + html
+    val gt = html.indexOf('>', idx)
+    if (gt < 0) return ERROR_HOOK + html
+    return html.substring(0, gt + 1) + ERROR_HOOK + html.substring(gt + 1)
 }

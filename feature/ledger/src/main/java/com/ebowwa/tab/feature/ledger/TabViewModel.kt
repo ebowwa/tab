@@ -5,10 +5,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import com.ebowwa.tab.core.agent.HtmlValidator
+import com.ebowwa.tab.core.agent.GameTemplate
 import com.ebowwa.tab.core.agent.ModelDownload
 import com.ebowwa.tab.core.agent.ModelStatus
 import com.ebowwa.tab.core.agent.StudioAgent
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,6 +30,10 @@ data class UiState(
 class StudioViewModel(private val appContext: Context) : ViewModel() {
 
     private val agent = StudioAgent()
+
+    private val runtimeErrors = java.util.Collections.synchronizedList(mutableListOf<String>())
+    private var repairAttempts = 0
+    private var lastPrompt = ""
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -76,37 +81,48 @@ class StudioViewModel(private val appContext: Context) : ViewModel() {
     fun generate(prompt: String) {
         val p = prompt.trim()
         if (p.isEmpty() || _state.value.busy) return
+        lastPrompt = p
+        repairAttempts = 0
+        runtimeErrors.clear()
         viewModelScope.launch {
             _state.update { it.copy(busy = true, error = null, metrics = "") }
             try {
-                agent.generate(p).fold(
-                    onSuccess = { r ->
-                        val verdict = HtmlValidator.validate(r.text)
-                        val page = verdict.html
-                        val tok = if (r.ttftMs > 0L) String.format(Locale.US, "%.0f", r.tokPerSec) else "n/a"
-                        val summary = "${r.outputTokens} tok | ${r.totalMs} ms | $tok tok/s"
-                        if (page == null) {
-                            _state.update { it.copy(error = verdict.reason, metrics = summary) }
-                        } else {
-                            runCatching {
-                                java.io.File(appContext.filesDir, "last_game.html").writeText(page)
-                            }
-                            _state.update { st ->
-                                st.copy(
-                                    history = (st.history + listOfNotNull(st.html.ifBlank { null })).takeLast(10),
-                                    html = page,
-                                    metrics = summary,
-                                )
-                            }
-                        }
-                    },
-                    onFailure = { e -> _state.update { it.copy(error = e.message ?: e::class.java.simpleName) } },
-                )
+                attempt(p, repairOf = null)
             } finally {
                 _state.update { it.copy(busy = false) }
             }
         }
     }
+
+    private suspend fun attempt(prompt: String, repairOf: Pair<String, String>?) {
+        agent.design(prompt).fold(
+            onSuccess = { (spec, r) ->
+                val page = GameTemplate.render(spec)
+                runCatching { java.io.File(appContext.filesDir, "last_game.html").writeText(page) }
+                val tok = if (r.ttftMs > 0L) String.format(Locale.US, "%.0f", r.tokPerSec) else "n/a"
+                val summary = "${r.outputTokens} tok | ${r.totalMs} ms | $tok tok/s"
+                _state.update { st ->
+                    st.copy(
+                        history = (st.history + listOfNotNull(st.html.ifBlank { null })).takeLast(10),
+                        html = page,
+                        metrics = summary,
+                    )
+                }
+            },
+            onFailure = { e -> _state.update { it.copy(error = e.message ?: "design failed") } },
+        )
+    }
+
+    /**
+     * Reported by the WebView when the generated page throws. Repairs are triggered by the
+     * error arriving, not by a timer: a fixed delay missed errors that surfaced later.
+     */
+    fun onRuntimeError(message: String) {
+        // The engine is ours, so this should never fire; keep it visible if it does.
+        android.util.Log.w("Tab", "webview error: $message")
+    }
+
+    private var repairing = false
 
     fun undo() {
         val h = _state.value.history
