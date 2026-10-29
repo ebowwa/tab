@@ -32,6 +32,7 @@ dependencies {
     implementation(project(":feature:ledger"))
     implementation(project(":core:model"))
     implementation(project(":core:data"))
+    implementation(project(":core:agent"))
 
     // AppFunctions: the compiler is a KSP processor, never a runtime dependency.
     implementation(libs.androidx.appfunctions)

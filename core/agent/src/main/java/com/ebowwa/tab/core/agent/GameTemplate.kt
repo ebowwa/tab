@@ -46,11 +46,11 @@ object GameTemplate {
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 html,body{margin:0;height:100%;overflow:hidden;background:${s.background};touch-action:none}
-canvas{display:block;width:100vw;height:100vh}
+canvas{display:block;position:fixed;top:0;left:0}
 </style></head><body><canvas id="c"></canvas>
 <script>
 var c=document.getElementById('c'),x=c.getContext('2d');
-function fit(){c.width=innerWidth;c.height=innerHeight}
+function fit(){c.width=innerWidth;c.height=innerHeight;c.style.width=innerWidth+'px';c.style.height=innerHeight+'px'}
 addEventListener('resize',fit);fit();
 var W=c.width,H=c.height,px=W/2,py=H-70,pw=${s.playerWidth},score=0,lives=3,timer=0,objs=[],over=false;
 var SPEED=${s.speed},SPAWN=${s.spawnRate},ACCENT='${s.accent}',NAME='${s.objectName}',TITLE='${s.title}';
@@ -71,6 +71,7 @@ function draw(){
     return;
   }
   timer++;
+  if(timer%60===0)console.log('tick '+timer+' w='+c.width+' h='+c.height);
   if(timer%SPAWN===0)spawn();
   px=Math.max(pw/2,Math.min(W-pw/2,px));
   for(var i=objs.length-1;i>=0;i--){
@@ -78,7 +79,7 @@ function draw(){
     if(o.y>py-10&&o.y<py+22&&Math.abs(o.x-px)<pw/2){
       objs.splice(i,1);score++;continue;
     }
-    if(o.y>H){objs.splice(i,1);lives--;if(lives<=0)over=true;continue;}
+    if(o.y>H){objs.splice(i,1);lives--;if(lives<=0){lives=3;score=0;}continue;}
     x.beginPath();x.fillStyle=ACCENT;x.arc(o.x,o.y,o.r,0,6.283);x.fill();
   }
   x.fillStyle=ACCENT;x.fillRect(px-pw/2,py,pw,14);

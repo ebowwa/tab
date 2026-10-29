@@ -5,7 +5,7 @@ import androidx.appfunctions.AppFunctionDeclaration
 import androidx.appfunctions.AppFunctionService
 import androidx.appfunctions.AppFunctionServiceEntryPoint
 import com.ebowwa.tab.MainActivity
-import kotlinx.coroutines.flow.MutableStateFlow
+import com.ebowwa.tab.core.agent.StudioRequests
 
 /**
  * A request handed from the system agent to the UI.
@@ -14,17 +14,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
  * service), so an AppFunction cannot generate. It queues the prompt here and the Activity
  * consumes it as soon as it is on screen.
  */
-object StudioRequests {
-    private val pending = MutableStateFlow<String?>(null)
-
-    fun queue(prompt: String) {
-        pending.value = prompt
-    }
-
-    fun take(): String? = pending.value.also { pending.value = null }
-
-    fun peek(): String? = pending.value
-}
 
 /**
  * How the *system* Gemini agent drives Studio.
